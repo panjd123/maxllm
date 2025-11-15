@@ -26,6 +26,7 @@ pip install maxllm
 git clone https://github.com/panjd123/maxllm.git
 cd maxllm
 pip install -e .
+# pip install "git+https://github.com/panjd123/maxllm.git"
 ```
 
 ## 配置
