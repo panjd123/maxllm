@@ -1,0 +1,131 @@
+model_list:
+  # === Qwen3-Reranker-0.6B ===
+
+  - &qwen_reranker_0_6b_base
+    litellm_params:
+      model: tomaarsen/Qwen3-Reranker-0.6B-seq-cls
+      api_base: http://10.77.110.167:8003/v1
+      api_key: "null"
+      custom_llm_provider: openai
+      local: true
+
+  - model_name: Qwen/Qwen3-Reranker-0.6B
+    <<: *qwen_reranker_0_6b_base
+  - model_name: Qwen3-Reranker-0.6B
+    <<: *qwen_reranker_0_6b_base
+  - model_name: Qwen3-Reranker-0.6B-seq-cls
+    <<: *qwen_reranker_0_6b_base
+  - model_name: tomaarsen/Qwen3-Reranker-0.6B-seq-cls
+    <<: *qwen_reranker_0_6b_base
+
+  # === DeepSeek-V3.2-Exp ===
+
+  - &deepseek_deepseek_v3_2_base
+    litellm_params:
+      model: deepseek-chat
+      model_unique_name: deepseek-v3.2-exp
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
+      custom_llm_provider: openai
+
+  - &deepseek_deepseek_v3_2_thinking_base
+    litellm_params:
+      model: deepseek-reasoner
+      model_unique_name: deepseek-v3.2-exp-thinking
+      api_base: https://api.deepseek.com
+      api_key: os.environ/DEEPSEEK_API_KEY
+      custom_llm_provider: openai
+
+  - &bianxie_deepseek_v3_2_base
+    litellm_params:
+      model: deepseek-v3.2-exp
+      model_unique_name: openrouter/deepseek-v3.2-exp
+      api_base: https://api.bianxie.ai/v1
+      api_key: os.environ/BIANXIE_API_KEY
+      custom_llm_provider: openai
+      tpm: 1000000
+
+  - &onechats_deepseek_v3_2_base
+    litellm_params:
+      model: deepseek-ai/DeepSeek-V3.2-Exp
+      model_unique_name: onechats/deepseek-v3.2-exp
+      api_base: https://chatapi.onechats.ai/v1
+      api_key: os.environ/ONECHATS_DEEPSEEK_API_KEY # Use OneChat's DeepSeek API key
+      custom_llm_provider: openai
+  
+  - &onechats_deepseek_v3_2_exp_thinking_base
+    litellm_params:
+      model: deepseek-ai/DeepSeek-V3.2-Exp-thinking
+      model_unique_name: onechats/deepseek-v3.2-exp-thinking
+      api_base: https://chatapi.onechats.ai/v1
+      api_key: os.environ/ONECHATS_DEEPSEEK_API_KEY  # Use OneChat's DeepSeek API key
+      custom_llm_provider: openai
+
+  - model_name: deepseek/deepseek-v3.2-exp
+    <<: *deepseek_deepseek_v3_2_base
+  # - model_name: deepseek-chat
+  #   <<: *deepseek_deepseek_v3_2_base
+  # - model_name: deepseek-v3.2-exp
+  #   <<: *deepseek_deepseek_v3_2_base
+  # - model_name: deepseek
+  #   <<: *deepseek_deepseek_v3_2_base
+
+  - model_name: openrouter/deepseek-v3.2-exp
+    <<: *bianxie_deepseek_v3_2_base
+  - model_name: bianxie/deepseek-v3.2-exp
+    <<: *bianxie_deepseek_v3_2_base
+
+  - model_name: deepseek-v3.2-exp
+    <<: *onechats_deepseek_v3_2_base
+  - model_name: onechats/deepseek-v3.2-exp
+    <<: *onechats_deepseek_v3_2_base
+  - model_name: deepseek-chat
+    <<: *onechats_deepseek_v3_2_base
+  - model_name: deepseek
+    <<: *onechats_deepseek_v3_2_base
+
+  - model_name: deepseek-v3.2-exp-thinking
+    <<: *onechats_deepseek_v3_2_exp_thinking_base
+  - model_name: onechats/deepseek-v3.2-exp-thinking
+    <<: *onechats_deepseek_v3_2_exp_thinking_base
+  - model_name: deepseek-reasoner
+    <<: *onechats_deepseek_v3_2_exp_thinking_base
+
+  - model_name: "glm-*"
+    litellm_params:
+      model: ~
+      api_base: https://chatapi.onechats.top/v1
+      api_key: os.environ/ONECHATS_DEEPSEEK_API_KEY
+      custom_llm_provider: openai
+
+  - model_name: "*"
+    litellm_params:
+      model: "*"
+      model_unique_name: "*" # onechats/*
+      api_base: https://chatapi.onechats.top/v1
+      api_key: os.environ/ONECHATS_SPECIAL_OFFER_API_KEY
+      custom_llm_provider: openai
+
+# You can set rate limits directly in model_list, but you may prefer to set them here for other fallback cases without addtional configuration.
+rate_limit:
+  default:
+    - model_name: embedding
+      rpm: 6000
+      tpm: 24000000
+    - model_name: completion
+      rpm: 3000
+      tpm: 2000000
+    - model_name: local_embedding
+      rpm: 6000
+      tpm: 12000000
+    - model_name: local_completion
+      rpm: 1000
+      tpm: 500000
+  custom_limits:
+    - model_name: gpt-5*
+      rpm: 5000
+      tpm_upper_bound: 20000000
+      tpm: 218182
+    - model_name: deepseek-v3.2-exp
+      rpm: 1500
+      tpm: 1000000
