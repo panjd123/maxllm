@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "panjd123", email = "xm.jarden@gmail.com"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -36,6 +36,8 @@ dependencies = [
     "json5>=0.9.0",
     "json-repair>=0.7.0",
     "python-dotenv>=1.0.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +49,9 @@ transformers = [
 Homepage = "https://github.com/panjd123/maxllm"
 Repository = "https://github.com/panjd123/maxllm"
 Issues = "https://github.com/panjd123/maxllm/issues"
+
+[project.scripts]
+maxllm = "maxllm.cli:main"
 
 [tool.setuptools]
 packages = ["maxllm"]
