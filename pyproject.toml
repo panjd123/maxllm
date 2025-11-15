@@ -44,9 +44,9 @@ transformers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/maxllm"
-Repository = "https://github.com/yourusername/maxllm"
-Issues = "https://github.com/yourusername/maxllm/issues"
+Homepage = "https://github.com/panjd123/maxllm"
+Repository = "https://github.com/panjd123/maxllm"
+Issues = "https://github.com/panjd123/maxllm/issues"
 
 [tool.setuptools]
 packages = ["maxllm"]
