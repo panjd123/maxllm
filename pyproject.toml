@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maxllm"
-version = "0.1.0"
+version = "0.1.1"
 description = "A unified OpenAI API client with rate limiting, caching, and batch processing"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -51,10 +51,10 @@ Repository = "https://github.com/panjd123/maxllm"
 Issues = "https://github.com/panjd123/maxllm/issues"
 
 [project.scripts]
-maxllm = "maxllm.cli:main"
+maxllm = "src.cli:main"
 
 [tool.setuptools]
-packages = ["maxllm"]
+packages = ["src"]
 
 [tool.setuptools.package-data]
 # Explicitly exclude litellm.yaml from the package

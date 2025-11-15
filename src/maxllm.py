@@ -147,6 +147,13 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    
 
 from collections import defaultdict
 
@@ -1771,21 +1778,35 @@ async def _async_openai_complete_single_completer(
 class WeightedCompleterSelector:
     def __init__(self, models, weights):
         self.models = models
-        self.schedule = []
-        for idx, w in enumerate(weights):
-            self.schedule.extend([idx] * w)
-        self.pos = 0
+        self.weights = weights
+        self.current = [0] * len(weights)
+        self.weight_sum = sum(weights)
 
     def next(self):
-        if not self.schedule:
+        if not self.models:
             return None
-        idx = self.schedule[self.pos]
-        self.pos = (self.pos + 1) % len(self.schedule)
+
+        # 让每个模型累计权重
+        for i in range(len(self.weights)):
+            self.current[i] += self.weights[i]
+
+        # 选到当前权重最大的那个
+        idx = max(range(len(self.current)), key=lambda i: self.current[i])
+
+        # 平滑回调
+        self.current[idx] -= self.weight_sum
+
         return self.models[idx]
 
 
 selectors: dict[str, WeightedCompleterSelector] = {}
 
+def _is_number(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
 
 def _create_selector_from_model_weights(model_weights_str: str):
     # 去除空白
@@ -1806,15 +1827,17 @@ def _create_selector_from_model_weights(model_weights_str: str):
 
         # 找最后一个 ":" 作为权重分隔
         if ":" not in part:
-            raise ValueError(f"缺少权重: {part}")
+            model = part
+            config = find_best_model_config(model)
+            weight = config.get("litellm_params", {}).get("weight", "1")
+        else:
+            model, weight = part.rsplit(":", 1)
 
-        model, weight = part.rsplit(":", 1)
-
-        if not weight.isdigit():
+        if not _is_number(weight):
             raise ValueError(f"权重必须是数字: {part}")
 
         models.append(model)
-        weights.append(int(weight))
+        weights.append(float(weight))
 
     # 返回加权调度器
     return WeightedCompleterSelector(models, weights)
@@ -2126,22 +2149,20 @@ async def batch_example():
     print(results)
 
 
-async def _benchmark(n_task=20):
+async def _benchmark(n_task=20, model="gpt-4o-mini"):
     try:
         logger.info("--- Starting OpenAI Request Stress Test (Async) ---")
 
         time_start = time.monotonic()
         tasks = [
             async_openai_complete(
-                model="gpt-4o-mini",
+                model=model,
                 prompt=f"Write a short poem about number {i}", force=True
             )
             for i in range(n_task)
         ]
         time_task_created = time.monotonic()
 
-        results = []
-
         results = await batch_async_tqdm(tasks, desc="Processing tasks", unit="task")
 
         time_task_done = time.monotonic()
@@ -2153,33 +2174,14 @@ async def _benchmark(n_task=20):
         logger.info(
             f"Elapsed time for task processing: {time_task_done - time_task_created:.2f}s"
         )
-
-        logger.info("--- Starting OpenAI Request Stress Test (LoadBalanced) ---")
-
-        time_start = time.monotonic()
-        tasks = [
-            async_openai_complete(
-                model="gpt-4o-mini:1+gpt-4o-mini:2",
-                prompt=f"Write a short poem about number {i}",
-                force=True,
-            )
-            for i in range(n_task)
-        ]
-        time_task_created = time.monotonic()
-        results = await batch_async_tqdm(tasks, desc="Processing tasks", unit="task")
-        time_task_done = time.monotonic()
-        logger.info("--- Test Finished ---")
-
         logger.info(
-            f"Elapsed time for task creation: {time_task_created - time_start:.2f}s"
-        )
-        logger.info(
-            f"Elapsed time for task processing: {time_task_done - time_task_created:.2f}s"
+            [f"Result {i}: {result[:60]}..." for i, result in enumerate(results)]
         )
 
     finally:
         # Ensure the logger file is properly closed on exit
-        _global_csv_logger.close()
+        # _global_csv_logger.close()
+        pass
 
 
 async def _examples():
@@ -2217,9 +2219,11 @@ async def _examples():
     print(response)
 
 async def _main():
-    await _examples()
-    # await _benchmark(20)
+    # await _examples()
+    await _benchmark(10, model="Qwen3-4B-3090+Qwen3-4B-4090") # warmup
+    await _benchmark(100, model="Qwen3-4B-3090")
+    await _benchmark(100, model="Qwen3-4B-3090+Qwen3-4B-4090")
 
-# python -m jrag.openai.rate_limit_complete
+# python -m maxllm.maxllm
 if __name__ == "__main__":
     asyncio.run(_main())
