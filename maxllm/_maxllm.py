@@ -883,10 +883,13 @@ class RateLimitCompleter:
             if request_flag:
                 cache_params += (request_flag,)
 
-            cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
-
             no_read_cache_flag = global_recache_flag or force
             no_write_cache_flag = force
+
+            if no_read_cache_flag and no_write_cache_flag:
+                cache_key = None
+            else:
+                cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
 
             if not no_read_cache_flag and cache_key in self.cache:
                 cached_response = self.cache[cache_key]
@@ -1250,10 +1253,13 @@ class RateLimitCompleter:
         if request_flag:
             cache_params += (request_flag,)
 
-        cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
-
         no_read_cache_flag = global_recache_flag or force
         no_write_cache_flag = force
+
+        if no_read_cache_flag and no_write_cache_flag:
+            cache_key = None
+        else:
+            cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
 
         if not no_read_cache_flag and cache_key in self.cache:
             cached_response = self.cache[cache_key]

@@ -61,6 +61,16 @@ def test(model: str = typer.Argument(..., help="Model name to test")):
         raise typer.Exit(1)
 
 @app.command()
+def test_embedding(model: str = typer.Argument(..., help="Embedding model name to test")):
+    """Test if an embedding model is responsive."""
+    try:
+        embedding = asyncio.run(async_openai_complete(model=model, prompt="Test embedding"))
+        console.print(f"[green]✓[/green] Embedding model '{model}' is responsive. Sample embedding length: {len(embedding)}")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {e}")
+        raise typer.Exit(1)
+
+@app.command()
 def chat(
     model: str = typer.Option("gpt-4o-mini", "--model", "-m", help="Model name to use"),
     prompt: Optional[str] = typer.Option(None, "--prompt", "-p", help="User prompt"),
