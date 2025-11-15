@@ -6,7 +6,7 @@ from typing import Optional
 import json
 import asyncio
 
-from .maxllm import get_completer, async_openai_complete
+from ._maxllm import get_completer, async_openai_complete
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
 console = Console()

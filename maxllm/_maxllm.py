@@ -2224,6 +2224,6 @@ async def _main():
     await _benchmark(100, model="Qwen3-4B-3090")
     await _benchmark(100, model="Qwen3-4B-3090+Qwen3-4B-4090")
 
-# python -m maxllm.maxllm
+# python -m maxllm._maxllm
 if __name__ == "__main__":
     asyncio.run(_main())

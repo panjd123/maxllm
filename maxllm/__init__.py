@@ -1,4 +1,4 @@
-from .maxllm import (
+from ._maxllm import (
     async_openai_complete,
     openai_complete,
     get_call_status,

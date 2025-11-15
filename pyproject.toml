@@ -51,10 +51,10 @@ Repository = "https://github.com/panjd123/maxllm"
 Issues = "https://github.com/panjd123/maxllm/issues"
 
 [project.scripts]
-maxllm = "src.cli:main"
+maxllm = "maxllm.cli:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["maxllm"]
 
 [tool.setuptools.package-data]
 # Explicitly exclude litellm.yaml from the package
