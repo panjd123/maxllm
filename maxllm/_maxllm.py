@@ -41,10 +41,34 @@ import json
 import json5
 import json_repair
 from typing import Any, List, Optional, Union
+from dotenv import load_dotenv, find_dotenv
+from collections import defaultdict
 
-from dotenv import load_dotenv
+try:
+    from jrag.logger import get_module_logger  # type: ignore
 
-load_dotenv()
+    logger = get_module_logger(__file__, __package__)
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+path = os.getenv("MAXLLM_DOTENV_PATH", None) or find_dotenv(usecwd=True)
+
+if path:
+    logger.info(f"Loading .env file from: {path}")
+else:
+    logger.warning(".env file not found.")
+    logger.info(f"Looking for .env file in current directory: {os.getcwd()}")
+
+load_dotenv(path)
 
 MAXLLM_FOLDER = osp.join(osp.expanduser("~"), ".maxllm")
 MAXLLM_LOGS_FOLDER = osp.join(MAXLLM_FOLDER, "logs")
@@ -55,6 +79,7 @@ os.makedirs(MAXLLM_FOLDER, exist_ok=True)
 os.makedirs(MAXLLM_LOGS_FOLDER, exist_ok=True)
 os.makedirs(MAXLLM_CACHE_FOLDER, exist_ok=True)
 os.makedirs(MAXLLM_BATCH_FOLDER, exist_ok=True)
+
 
 def _lower_keys(obj):
     if isinstance(obj, dict):
@@ -138,24 +163,6 @@ def _parse_json_safely(
 
     return {}
 
-try:
-    from jrag.logger import get_module_logger  # type: ignore
-
-    logger = get_module_logger(__file__, __package__)
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    
-
-from collections import defaultdict
 
 def _create_call_status():
     return {
@@ -183,6 +190,7 @@ global_recache_flag = os.getenv("RECACHE_FLAG", "0") in ["1", "true", "True"]
 def set_request_flag(flag: Any):
     global global_request_flag
     global_request_flag = flag
+
 
 # ==============================================================================
 # 1. Cost and Logging Setup (Inspired by your code)
@@ -292,7 +300,9 @@ class SlidingWindowAverage:
 
 
 # Create a single, shared logger instance
-_global_csv_logger = AsyncOpenAICSVLogger(osp.join(MAXLLM_LOGS_FOLDER, "openai_calls.csv"))
+_global_csv_logger = AsyncOpenAICSVLogger(
+    osp.join(MAXLLM_LOGS_FOLDER, "openai_calls.csv")
+)
 
 MAX_RETRY = 5
 MAX_NO_RATELIMIT_RETRY = 3
@@ -396,6 +406,7 @@ def _get_response_tokens(response):
         output_reasoning_tokens,
         usage.total_tokens,
     )
+
 
 # Find config file in the following order:
 # 1. Environment variable MAXLLM_CONFIG_PATH
@@ -698,8 +709,8 @@ class RateLimitCompleter:
 
         self.openai_parse_compatible = False  # 和当前 cache 逻辑冲突，禁用
 
-        self.json_mode_compatible, self.json_format_compatible = _get_json_compatibility(
-            model_unique_name
+        self.json_mode_compatible, self.json_format_compatible = (
+            _get_json_compatibility(model_unique_name)
         )
 
         self.is_local_model = is_local_model
@@ -1015,7 +1026,6 @@ class RateLimitCompleter:
                                 model=self.model,
                                 input=messages,
                                 text_format=json_format,
-                                stream=False,
                                 **kwargs,
                             )
                         elif not self.is_embedding_model:
@@ -1045,7 +1055,6 @@ class RateLimitCompleter:
                                     await self.async_client.chat.completions.create(
                                         model=self.model,
                                         messages=messages,
-                                        stream=False,
                                         **kwargs,
                                     )
                                 )
@@ -1331,7 +1340,6 @@ class RateLimitCompleter:
                         model=self.model,
                         input=messages,
                         text_format=json_format,
-                        stream=False,
                         **kwargs,
                     )
                 elif not self.is_embedding_model:
@@ -1355,7 +1363,6 @@ class RateLimitCompleter:
                         response = self.client.chat.completions.create(
                             model=self.model,
                             messages=messages,
-                            stream=False,
                             **kwargs,
                         )
                 else:
@@ -1503,7 +1510,8 @@ class RateLimitCompleter:
                 self.workspace = workspace
             else:
                 self.workspace = osp.join(
-                    MAXLLM_BATCH_FOLDER, datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    MAXLLM_BATCH_FOLDER,
+                    datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
                 )
 
             self.cached_result_file = osp.join(self.workspace, "cached_results.jsonl")
@@ -1807,12 +1815,14 @@ class WeightedCompleterSelector:
 
 selectors: dict[str, WeightedCompleterSelector] = {}
 
+
 def _is_number(s: str) -> bool:
     try:
         float(s)
         return True
     except ValueError:
         return False
+
 
 def _create_selector_from_model_weights(model_weights_str: str):
     # 去除空白
@@ -2162,8 +2172,7 @@ async def _benchmark(n_task=20, model="gpt-4o-mini"):
         time_start = time.monotonic()
         tasks = [
             async_openai_complete(
-                model=model,
-                prompt=f"Write a short poem about number {i}", force=True
+                model=model, prompt=f"Write a short poem about number {i}", force=True
             )
             for i in range(n_task)
         ]
@@ -2224,11 +2233,13 @@ async def _examples():
     )
     print(response)
 
+
 async def _main():
     # await _examples()
-    await _benchmark(10, model="Qwen3-4B-3090+Qwen3-4B-4090") # warmup
+    await _benchmark(10, model="Qwen3-4B-3090+Qwen3-4B-4090")  # warmup
     await _benchmark(100, model="Qwen3-4B-3090")
     await _benchmark(100, model="Qwen3-4B-3090+Qwen3-4B-4090")
+
 
 # python -m maxllm._maxllm
 if __name__ == "__main__":
