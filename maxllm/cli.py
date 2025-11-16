@@ -5,8 +5,11 @@ from rich.panel import Panel
 from typing import Optional
 import json
 import asyncio
+from datasets import load_dataset
+from timeit import default_timer as timer
+import tiktoken
 
-from ._maxllm import get_completer, async_openai_complete
+from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_model, get_call_status
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
 console = Console()
@@ -69,6 +72,59 @@ def test_embedding(model: str = typer.Argument(..., help="Embedding model name t
     except Exception as e:
         console.print(f"[red]✗[/red] Error: {e}")
         raise typer.Exit(1)
+
+
+# maxllm benchmark Qwen3-4B-A100    28.26s  3.53qps
+# maxllm benchmark Qwen3-4B-4090    72.57s  1.36qps
+# maxllm benchmark Qwen3-4B-3090    91.38s  1.08qps
+# maxllm benchmark Qwen3-4B-A100+Qwen3-4B-4090+Qwen3-4B-3090  21.56s  4.64qps
+@app.command()
+def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"), 
+              num_prompt: int = typer.Option(100, "--num-prompt", "-n", help="Number of prompts to generate"),
+              max_tokens: int = typer.Option(4096, "--max-tokens", "-t", help="Maximum tokens for input")
+              ):
+    console.print(f"[cyan]Preparing benchmark for model '{model}'...[/cyan]")
+    subset = "narrativeqa"
+    enc = tiktoken.encoding_for_model("gpt-4o-mini")
+
+    def truncate_to_tokens(text, max_tokens):
+        ids = enc.encode(text)
+        if len(ids) <= max_tokens:
+            return text
+        ids = ids[:max_tokens]
+        return enc.decode(ids)
+
+    ds = load_dataset("THUDM/LongBench", subset, split="test", revision="refs/pr/7")
+
+    messages_list = []
+
+    for i in range(num_prompt):
+        row = ds[i]
+        context = row["context"]
+        question = row["input"]
+
+        prompt = f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+        prompt = truncate_to_tokens(prompt, max_tokens)
+
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
+        messages_list.append(messages)
+        
+    console.print(f"[cyan]Benchmarking model '{model}' with {num_prompt} prompts...[/cyan]")
+    warmup_model(model)
+    tasks = []
+    for messages in messages_list:
+        tasks.append(async_openai_complete(model=model, messages=messages, max_tokens=512, force=True))
+    start_time = timer()
+    responses = asyncio.run(batch_async_tqdm(tasks, desc="Benchmarking"))
+    end_time = timer()
+    call_status = get_call_status()
+    console.print(f"[green]Call status: {call_status}[/green]")
+    console.print(f"[green]Benchmark completed in {end_time - start_time:.2f} seconds[/green]")
+    console.print(f"[green]Average requests per second: {num_prompt / (end_time - start_time):.2f}[/green]")
+    
+
 
 @app.command()
 def chat(

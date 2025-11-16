@@ -327,49 +327,57 @@ def diff_call_status(
     return diff
 
 
-def get_call_status():
+def get_call_status(model: Optional[str] = None):
     global _call_status
-    # return _call_status
-    # return dict(_call_status)
     return_status = deepcopy(dict(_call_status))
-    for model in return_status:
-        return_status[model]["cost_usd"] = 0.0
-        return_status[model]["cached_usd"] = 0.0
+    
+    if model and model not in return_status:
+        return f"Not found call status for model: {model}"
+    elif model:
+        return_status = {model: return_status[model]}
+        
+    for model_name in return_status:
+        return_status[model_name]["cost_usd"] = 0.0
+        return_status[model_name]["cached_usd"] = 0.0
         model_price = MODEL_PRICES.get(
-            model, {"input": 0.0, "output": 0.0, "cache_rate": 0.1}
+            model_name, {"input": 0.0, "output": 0.0, "cache_rate": 0.1}
         )
-        return_status[model]["cost_usd"] += (
+        return_status[model_name]["cost_usd"] += (
             (
-                return_status[model]["miss_input_tokens"]
-                - return_status[model]["miss_input_cached_tokens"]
+                return_status[model_name]["miss_input_tokens"]
+                - return_status[model_name]["miss_input_cached_tokens"]
             )
             / 1_000_000
         ) * model_price["input"]
-        return_status[model]["cost_usd"] += (
-            ((return_status[model]["miss_input_cached_tokens"]) / 1_000_000)
+        return_status[model_name]["cost_usd"] += (
+            ((return_status[model_name]["miss_input_cached_tokens"]) / 1_000_000)
             * model_price["input"]
             * model_price["cache_rate"]
         )
-        return_status[model]["cost_usd"] += (
-            return_status[model]["miss_output_tokens"] / 1_000_000
+        return_status[model_name]["cost_usd"] += (
+            return_status[model_name]["miss_output_tokens"] / 1_000_000
         ) * model_price["output"]
 
-        return_status[model]["cached_usd"] += (
+        return_status[model_name]["cached_usd"] += (
             (
-                return_status[model]["hit_input_tokens"]
-                - return_status[model]["hit_input_cached_tokens"]
+                return_status[model_name]["hit_input_tokens"]
+                - return_status[model_name]["hit_input_cached_tokens"]
             )
             / 1_000_000
         ) * model_price["input"]
-        return_status[model]["cached_usd"] += (
-            ((return_status[model]["hit_input_cached_tokens"]) / 1_000_000)
+        return_status[model_name]["cached_usd"] += (
+            ((return_status[model_name]["hit_input_cached_tokens"]) / 1_000_000)
             * model_price["input"]
             * model_price["cache_rate"]
         )
-        return_status[model]["cached_usd"] += (
-            return_status[model]["hit_output_tokens"] / 1_000_000
+        return_status[model_name]["cached_usd"] += (
+            return_status[model_name]["hit_output_tokens"] / 1_000_000
         ) * model_price["output"]
-    return json.dumps(return_status, indent=2, ensure_ascii=False)
+        
+    if model:
+        return json.dumps(return_status[model], indent=2, ensure_ascii=False)
+    else:
+        return json.dumps(return_status, indent=2, ensure_ascii=False)
 
 
 def _get_response_tokens(response):
@@ -575,7 +583,7 @@ def _get_encoding(model_name: str):
         try:
             if "qwen" in model_name.lower():
                 encoder = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-                logger.info(f"Using HuggingFace tokenizer for model {model_name}")
+                # logger.info(f"Using HuggingFace tokenizer for model {model_name}")
         except Exception:
             pass
         encoder = tiktoken.get_encoding("cl100k_base")
@@ -780,14 +788,14 @@ class RateLimitCompleter:
         CACHE_SIZE_LIMIT = 16 * (2**30)  # 16GB
         self.cache = Cache(self.cache_dir, size_limit=CACHE_SIZE_LIMIT)  # 16GB
         cache_volume = self.cache.volume()
-        if cache_volume > 0.5 * 16 * CACHE_SIZE_LIMIT:
+        if cache_volume > 0.5 * CACHE_SIZE_LIMIT:
             logger.error(
                 f"Cache size for model {model_unique_name} exceeds 50% of limit ({CACHE_SIZE_LIMIT/(2**30)} GB). Consider increasing or cleaning up."
             )
             exit(0)
-        else:
+        elif cache_volume > 0.2 * CACHE_SIZE_LIMIT:
             logger.info(
-                f"Cache size for model {model_unique_name}: {cache_volume/(2**30):.2f} GB"
+                f"Cache size for model {model_unique_name}: {cache_volume/(2**30):.2f} GB. Consider cleaning up if it exceeds 50% of limit ({CACHE_SIZE_LIMIT/(2**30)} GB)."
             )
 
     def estimate_tokens(self, text: str) -> int:
@@ -1993,6 +2001,13 @@ def create_batch(
         raise ValueError(f"Workspace {workspace} already exists.")
     return get_batch(model, workspace)
 
+def warmup_model(model):
+    start_time = time.time()
+    selector = _get_selector(model)
+    for model in selector.models:
+        completer = get_completer(model)
+    end_time = time.time()
+    logger.info(f"Warmup {model} took {end_time - start_time:.2f} seconds.")
 
 async def _async_index_wrap(task, i, semaphore=None):
     if semaphore:

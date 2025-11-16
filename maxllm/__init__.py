@@ -11,6 +11,7 @@ from ._maxllm import (
     set_request_flag,
     diff_call_status,
     get_completer,
+    warmup_model,
     ExceptionWithMeta,
     RateLimitCompleter,
 )
