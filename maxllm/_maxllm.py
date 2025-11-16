@@ -26,9 +26,11 @@ import requests
 from copy import deepcopy
 
 import openai
-from openai.resources.chat.completions.completions import (
-    _type_to_response_format as type_to_response_format,
-)
+from openai.lib._parsing._completions import type_to_response_format_param as type_to_response_format
+# from openai.resources.chat.completions.completions import (
+#     _type_to_response_format as type_to_response_format,
+# )
+    
 from openai.types import ReasoningEffort
 from openai import NotGiven
 from aiolimiter import AsyncLimiter
