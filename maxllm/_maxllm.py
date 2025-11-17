@@ -530,6 +530,8 @@ def get_rate_limit(
 
 def find_best_model_config(target_name: str, model_list: list = _litellm_model_list):
     best_item = _find_best_match(target_name, model_list)
+    if best_item["litellm_params"]["model"] is None:
+        best_item["litellm_params"]["model"] = target_name
     if best_item and best_item["litellm_params"].get("model", "").count("*") > 0:
         if best_item["model_name"].count("*") == best_item["litellm_params"].get(
             "model", ""
@@ -854,9 +856,6 @@ class RateLimitCompleter:
                         if key in kwargs:
                             prompt = kwargs.pop(key)
                             break
-
-            if self.is_local_model:
-                kwargs["timeout"] = 99999  # no timeout for local model
 
             if not prompt and not messages:
                 raise ValueError("'prompt' or 'messages' must be provided.")
