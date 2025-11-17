@@ -1,7 +1,6 @@
 import asyncio
 import copy
 import time
-from tqdm.asyncio import tqdm as async_tqdm
 from tqdm import tqdm
 import csv
 import os
@@ -20,17 +19,13 @@ from openai.types.create_embedding_response import (
 )
 from openai.types.create_embedding_response import Usage as EmbeddingUsage
 from openai.types.responses import ResponseUsage, Response
-from openai.types.responses.parsed_response import ParsedResponse
 import yaml
 import requests
 from copy import deepcopy
 
 import openai
 from openai.lib._parsing._completions import type_to_response_format_param as type_to_response_format
-# from openai.resources.chat.completions.completions import (
-#     _type_to_response_format as type_to_response_format,
-# )
-    
+
 from openai.types import ReasoningEffort
 from openai import NotGiven
 from aiolimiter import AsyncLimiter
@@ -257,17 +252,13 @@ class AsyncOpenAICSVLogger:
         if self.file.tell() == 0:
             self.writer.writeheader()
 
-        # Use asyncio.Lock for async-safety instead of threading.Lock
-        self.lock = asyncio.Lock()
-
     async def async_log(self, row: dict):
         """Asynchronously logs a row to the CSV file."""
         # The lock prevents race conditions from concurrent tasks writing at the same time.
         # Note: The file I/O itself is blocking. For extremely high throughput,
         # a library like 'aiofiles' could be used, but this is sufficient for most cases.
-        async with self.lock:
-            self.writer.writerow(row)
-            self.file.flush()  # Ensure data is written to disk immediately
+        self.writer.writerow(row)
+        self.file.flush()  # Ensure data is written to disk immediately
 
     def log(self, row: dict):
         self.writer.writerow(row)
@@ -422,13 +413,17 @@ def _get_response_tokens(response):
 # 1. Environment variable MAXLLM_CONFIG_PATH
 # 2. Current working directory (maxllm.yaml)
 # 3. Default config file path (~/.maxllm/maxllm.yaml)
-_config_path = None
-if os.environ.get("MAXLLM_CONFIG_PATH"):
-    _config_path = os.environ.get("MAXLLM_CONFIG_PATH")
-elif osp.exists("maxllm.yaml"):
-    _config_path = "maxllm.yaml"
-elif osp.exists(MAXLLM_DEFAULT_CONFIG_FILE):
-    _config_path = MAXLLM_DEFAULT_CONFIG_FILE
+def get_maxllm_config_path():
+    if os.environ.get("MAXLLM_CONFIG_PATH"):
+        return os.environ.get("MAXLLM_CONFIG_PATH")
+    elif osp.exists("maxllm.yaml"):
+        return "maxllm.yaml"
+    elif osp.exists(MAXLLM_DEFAULT_CONFIG_FILE):
+        return MAXLLM_DEFAULT_CONFIG_FILE
+    else:
+        return None
+
+_config_path = get_maxllm_config_path()
 
 # Try to load config file, use defaults if not found
 if _config_path and osp.exists(_config_path):
@@ -568,11 +563,6 @@ def find_best_model_config(target_name: str, model_list: list = _litellm_model_l
 def _get_json_compatibility(model_name: str) -> bool:
     json_mode_compatible = True
     json_format_compatible = True
-
-    # if "grok" in model_name.lower():
-    #     json_mode_compatible = False
-    #     json_format_compatible = True
-
     return json_mode_compatible, json_format_compatible
 
 
@@ -585,29 +575,46 @@ def _get_encoding(model_name: str):
         encoder = tiktoken.encoding_for_model(model_name)
     except KeyError:
         try:
-            if "qwen" in model_name.lower():
-                encoder = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-                # logger.info(f"Using HuggingFace tokenizer for model {model_name}")
+            encoder = AutoTokenizer.from_pretrained(model_name, use_fast=True)
         except Exception:
-            pass
+            logger.warning(f"Using default encoding for model {model_name} due to error loading tokenizer.")
         encoder = tiktoken.get_encoding("cl100k_base")
     return encoder
 
 
-class BigSemaphore:
+class AutoLoopBigSemaphore:
     def __init__(self, value: int):
+        self._init_value = value
+        self._loop = None
         self._value = value
-        self._waiters = []
+        self._waiters = []   # list of (need, future)
+
+    def _ensure_loop(self):
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+            return 
+        
+        if self._loop.is_closed():
+            self._loop = loop = asyncio.get_event_loop()
+            self._waiters = []  # 重置 waiters，因为 future 属于老 loop，不可跨 loop
+            # self._value = self._init_value # 保留
+            logger.warning("BigSemaphore is being reused across event loops.")
 
     async def acquire(self, n=1):
         if n <= 0:
             return
-        fut = asyncio.get_event_loop().create_future()
+
+        self._ensure_loop()
+
+        fut = self._loop.create_future()
         self._waiters.append((n, fut))
         self._try_release_waiters()
+
         await fut
 
     def release(self, n=1):
+        self._ensure_loop()
+
         self._value += n
         self._try_release_waiters()
 
@@ -615,13 +622,22 @@ class BigSemaphore:
         i = 0
         while i < len(self._waiters):
             need, fut = self._waiters[i]
-            if self._value >= need and not fut.done():
+            if fut.done():
+                self._waiters.pop(i)
+                continue
+            if self._value >= need:
                 self._value -= need
                 fut.set_result(True)
                 self._waiters.pop(i)
             else:
                 i += 1
 
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.release()
 
 class RateLimitCompleter:
     is_embedding_model: bool
@@ -751,14 +767,14 @@ class RateLimitCompleter:
 
         if concurrency == 0:
             if self.is_embedding_model:
-                self.semaphore = asyncio.Semaphore(1000)
+                self.semaphore = AutoLoopBigSemaphore(1000)
             else:
-                self.semaphore = asyncio.Semaphore(500)
+                self.semaphore = AutoLoopBigSemaphore(500)
         else:
             if concurrency is None:
-                self.semaphore = asyncio.Semaphore(99999)
+                self.semaphore = AutoLoopBigSemaphore(99999)
             else:
-                self.semaphore = asyncio.Semaphore(concurrency)
+                self.semaphore = AutoLoopBigSemaphore(concurrency)
         no_safe = os.environ.get("NO_SAFE", None) in ["1", "true", "True"]
         if no_safe:
             logger.warning("Rate limit set to NO_SAFE mode.")
@@ -775,7 +791,7 @@ class RateLimitCompleter:
         self.kvcache_tokens = kvcache_tokens
         self.rpm_limiter = AsyncLimiter(rpm, 60.0)
         self.soft_tpm_limiter = AsyncLimiter(tpm, 60.0)
-        self.kvcache_token_semaphore = BigSemaphore(0.98 * kvcache_tokens)  # 0.98
+        self.kvcache_token_semaphore = AutoLoopBigSemaphore(int(0.98 * kvcache_tokens))  # 0.98
         self.tpm_limiter = AsyncLimiter(tpm * hard_tpm_ratio, 60.0)
         self.encoding = _get_encoding(model)
         self.input_tokens_delta_deque = SlidingWindowAverage(
@@ -2039,7 +2055,7 @@ async def batch_async_tqdm(
     if concurrency is None or concurrency <= 0:
         semaphore = None
     else:
-        semaphore = asyncio.Semaphore(concurrency)
+        semaphore = AutoLoopBigSemaphore(concurrency)
     indexed_tasks = [
         _async_index_wrap(t, i, semaphore=semaphore) for i, t in enumerate(tasks)
     ]
@@ -2080,7 +2096,7 @@ async def batch_async_shared_tqdm(
     if concurrency is None or concurrency <= 0:
         semaphore = None
     else:
-        semaphore = asyncio.Semaphore(concurrency)
+        semaphore = AutoLoopBigSemaphore(concurrency)
     indexed_tasks = [
         _async_index_wrap(t, i, semaphore=semaphore) for i, t in enumerate(tasks)
     ]

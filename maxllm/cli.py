@@ -9,7 +9,7 @@ from datasets import load_dataset
 from timeit import default_timer as timer
 import tiktoken
 
-from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_model, get_call_status
+from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_model, get_call_status, get_maxllm_config_path
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
 console = Console()
@@ -123,7 +123,21 @@ def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"),
     console.print(f"[green]Call status: {call_status}[/green]")
     console.print(f"[green]Benchmark completed in {end_time - start_time:.2f} seconds[/green]")
     console.print(f"[green]Average requests per second: {num_prompt / (end_time - start_time):.2f}[/green]")
-    
+
+@app.command()
+def edit(editor: str = typer.Argument("code", help="Editor to use")):
+    """Open the editor for configuration."""
+    import os
+    import subprocess
+    config_path = get_maxllm_config_path()
+    if not os.path.exists(config_path):
+        console.print(f"[red]✗[/red] Configuration file does not exist at {config_path}")
+        raise typer.Exit(1)
+    try:
+        subprocess.run([editor, config_path])
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error opening editor: {e}")
+        raise typer.Exit(1)
 
 
 @app.command()
