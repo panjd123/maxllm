@@ -87,6 +87,8 @@ def _lower_keys(obj):
     else:
         return obj
 
+class AnyModel(BaseModel):
+    pass
 
 def _parse_json_safely(
     raw_text: str, json_format: Optional[BaseModel] = None
@@ -589,6 +591,7 @@ class AutoLoopBigSemaphore:
         self._loop = None
         self._value = value
         self._waiters = []  # list of (need, future)
+        self._warning_reuse = False
 
     def _ensure_loop(self):
         if self._loop is None:
@@ -598,9 +601,11 @@ class AutoLoopBigSemaphore:
         if self._loop.is_closed():
             self._loop = asyncio.get_event_loop()
             self._waiters = []
-            logger.warning(
-                f"BigSemaphore reused across loops; reset value from {self._value} to {self._init_value}"
-            )
+            if not self._warning_reuse:
+                logger.warning(
+                    f"BigSemaphore reused across loops; reset value from {self._value} to {self._init_value}"
+                )
+                self._warning_reuse = True
             self._value = self._init_value
 
     async def acquire(self, n=1):
@@ -1128,8 +1133,10 @@ class RateLimitCompleter:
                             if json_mode:
                                 if self.json_mode_compatible:
                                     kwargs["response_format"] = {"type": "json_object"}
-                                else:
-                                    pass
+                                elif self.json_format_compatible:
+                                    kwargs["response_format"] = type_to_response_format(
+                                        AnyModel
+                                    )
                             elif json_format:
                                 if self.json_format_compatible:
                                     kwargs["response_format"] = type_to_response_format(
@@ -1199,6 +1206,9 @@ class RateLimitCompleter:
                             _call_status[self.model_unique_name][
                                 "validation_errors"
                             ] += 1
+                            logger.warning(
+                                f"ValidationError encountered: {content} - Retry {num_attempt}"
+                            )
                     except Exception as e:
                         # logger.error(f"Non-retryable error: {type(e).__name__} - {e}")
                         raise e

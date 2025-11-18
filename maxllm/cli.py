@@ -10,6 +10,7 @@ from timeit import default_timer as timer
 import tiktoken
 
 from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_models, get_call_status, get_maxllm_config_path
+from .compatibility import compatibility_test
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
 console = Console()
@@ -73,6 +74,16 @@ def test_embedding(model: str = typer.Argument(..., help="Embedding model name t
         console.print(f"[red]✗[/red] Error: {e}")
         raise typer.Exit(1)
 
+@app.command()
+def ccompatibility(model: str = typer.Argument(..., help="Model name to test compatibility")):
+    """Run compatibility tests on a model."""
+    try:
+        console.print(f"[cyan]Running compatibility tests for model '{model}'...[/cyan]")
+        asyncio.run(compatibility_test(model))
+        console.print(f"[green]✓[/green] Compatibility tests completed for model '{model}'")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {e}")
+        raise typer.Exit(1)
 
 # maxllm benchmark Qwen3-4B-A100    28.26s  3.53qps
 # maxllm benchmark Qwen3-4B-4090    72.57s  1.36qps
