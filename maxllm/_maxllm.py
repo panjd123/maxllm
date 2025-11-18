@@ -40,6 +40,7 @@ import json_repair
 from typing import Any, List, Optional, Union
 from dotenv import load_dotenv, find_dotenv
 from collections import defaultdict
+import aiohttp
 
 try:
     from jrag.logger import get_module_logger  # type: ignore
@@ -587,34 +588,35 @@ class AutoLoopBigSemaphore:
         self._init_value = value
         self._loop = None
         self._value = value
-        self._waiters = []   # list of (need, future)
+        self._waiters = []  # list of (need, future)
 
     def _ensure_loop(self):
         if self._loop is None:
             self._loop = asyncio.get_event_loop()
-            return 
-        
+            return
+
         if self._loop.is_closed():
-            self._loop = loop = asyncio.get_event_loop()
-            self._waiters = []  # 重置 waiters，因为 future 属于老 loop，不可跨 loop
-            # self._value = self._init_value # 保留
-            logger.warning("BigSemaphore is being reused across event loops.")
+            self._loop = asyncio.get_event_loop()
+            self._waiters = []
+            logger.warning(
+                f"BigSemaphore reused across loops; reset value from {self._value} to {self._init_value}"
+            )
+            self._value = self._init_value
 
     async def acquire(self, n=1):
         if n <= 0:
             return
-
         self._ensure_loop()
 
         fut = self._loop.create_future()
         self._waiters.append((n, fut))
         self._try_release_waiters()
-
         await fut
 
     def release(self, n=1):
+        if n <= 0:
+            return
         self._ensure_loop()
-
         self._value += n
         self._try_release_waiters()
 
@@ -633,11 +635,121 @@ class AutoLoopBigSemaphore:
                 i += 1
 
     async def __aenter__(self):
-        await self.acquire()
+        await self.acquire(1)
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        self.release()
+        self.release(1)
+
+    # --------- 可传参上下文管理器 ---------
+
+    class _Ctx:
+        def __init__(self, sem, n):
+            self.sem = sem
+            self.n = n
+
+        async def __aenter__(self):
+            await self.sem.acquire(self.n)
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.sem.release(self.n)
+
+    def use(self, n=1):
+        return AutoLoopBigSemaphore._Ctx(self, n)
+
+class VLLMSleepModeManager:
+    vllm_api_base: str
+    def __init__(self, vllm_api_base: str):
+        self.vllm_api_base = vllm_api_base
+        
+    def is_sleep(self) -> bool:
+        url = osp.join(self.vllm_api_base, "is_sleeping")
+        try:
+            with requests.get(url) as resp:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("is_sleeping", False)
+                else:
+                    text = resp.text
+                    logger.error(
+                        f"VLLM model is_sleeping request failed: {resp.status_code} - {text}"
+                    )
+        except Exception as e:
+            logger.error(f"VLLM model is_sleeping request error: {e}")
+        return False
+    
+    async def ais_sleep(self) -> bool:
+        url = osp.join(self.vllm_api_base, "is_sleeping")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("is_sleeping", False)
+                    else:
+                        text = await resp.text()
+                        logger.error(
+                            f"VLLM model is_sleeping request failed: {resp.status} - {text}"
+                        )
+        except Exception as e:
+            logger.error(f"VLLM model is_sleeping request error: {e}")
+        return False
+    
+    def sleep(self):
+        url = osp.join(self.vllm_api_base, "sleep?level=1")
+        try:
+            with requests.post(url) as resp:
+                text = resp.text
+                logger.info(
+                    f"VLLM model sleep response: {resp.status_code} - {text}"
+                )
+        except Exception as e:
+            logger.error(f"VLLM model sleep error: {e}")
+            
+    async def asleep(self):
+        url = osp.join(self.vllm_api_base, "sleep?level=1")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url) as resp:
+                    text = await resp.text()
+                    logger.info(
+                        f"VLLM model sleep response: {resp.status} - {text}"
+                    )
+        except Exception as e:
+            logger.error(f"VLLM model sleep error: {e}")
+    
+    def wake_up(self):
+        url = osp.join(self.vllm_api_base, "wake_up")
+        try:
+            with requests.post(url) as resp:
+                text = resp.text
+                logger.info(
+                    f"VLLM model wake_up response: {resp.status_code} - {text}"
+                )
+        except Exception as e:
+            logger.error(f"VLLM model wake_up error: {e}")
+            
+    async def awake_up(self):
+        url = osp.join(self.vllm_api_base, "wake_up")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url) as resp:
+                    text = await resp.text()
+                    logger.info(
+                        f"VLLM model wake_up response: {resp.status} - {text}"
+                    )
+        except Exception as e:
+            logger.error(f"VLLM model wake_up error: {e}")
+            
+    def auto_wake_up(self):
+        is_sleep = self.is_sleep()
+        if is_sleep:
+            self.wake_up()
+
+    async def aauto_wake_up(self):
+        is_sleep = await self.ais_sleep()
+        if is_sleep:
+            await self.awake_up()
 
 class RateLimitCompleter:
     is_embedding_model: bool
@@ -649,44 +761,7 @@ class RateLimitCompleter:
     api_key: str
     vllm_api_base: str
     model: str
-
-    def _vllm_is_sleep(self) -> bool:
-        if self.is_local_model:
-            response = requests.get(osp.join(self.vllm_api_base, "is_sleeping"))
-            if response.status_code == 200:
-                data = response.json()
-                return data["is_sleeping"]
-            else:
-                logger.error(
-                    f"VLLM model is_sleeping request failed: {response.status_code} - {response.text}"
-                )
-        else:
-            logger.warning("Not a local model, cannot check sleep status.")
-        return False
-
-    def _vllm_sleep(self):
-        if self.is_local_model:
-            response = requests.post(osp.join(self.vllm_api_base, "sleep?level=1"))
-            logger.info(
-                f"VLLM model sleep response: {response.status_code} - {response.text}"
-            )
-        else:
-            logger.warning("Not a local model, cannot sleep.")
-
-    def _vllm_wake_up(self):
-        if self.is_local_model:
-            # gpu_status = requests.get("http://10.77.110.167:17520/gpu_status").json()
-            # if gpu_status["busy"]:
-            #     logger.error("GPU is busy, cannot wake up VLLM model now.")
-            #     raise RuntimeError("GPU is busy, cannot wake up VLLM model now.")
-            # else:
-            #     logger.info(gpu_status)
-            response = requests.post(osp.join(self.vllm_api_base, "wake_up"))
-            logger.info(
-                f"VLLM model wake_up response: {response.status_code} - {response.text}"
-            )
-        else:
-            logger.warning("Not a local model, cannot wake up.")
+    vllm_sleep_mode_manager: VLLMSleepModeManager
 
     def __init__(
         self,
@@ -695,6 +770,7 @@ class RateLimitCompleter:
         tpm: int = None,
         concurrency: Optional[int] = 0,
         hard_tpm_ratio=0.8,
+        lazy_wake_up=False,
     ):
         best_model_config = find_best_model_config(model_name)
 
@@ -744,15 +820,10 @@ class RateLimitCompleter:
         self.is_local_model = is_local_model
 
         if self.is_local_model:
-            self.vllm_api_base = api_base.replace("/v1", "")
-
-        if self.is_local_model:
-            is_sleep = self._vllm_is_sleep()
-            if is_sleep:
-                logger.info(
-                    f"Local model {model_unique_name} is sleeping, waking up..."
-                )
-                self._vllm_wake_up()
+            vllm_api_base = api_base.replace("/v1", "")
+            self.vllm_sleep_mode_manager = VLLMSleepModeManager(vllm_api_base)
+            if not lazy_wake_up:
+                self.vllm_sleep_mode_manager.auto_wake_up()
 
         self.enable_call_status = True
 
@@ -1018,9 +1089,6 @@ class RateLimitCompleter:
 
             await self.tpm_limiter.acquire(tokens_needed)
 
-            # 3.2.1 kvcache level token limit
-            await self.kvcache_token_semaphore.acquire(tokens_needed)
-
             if (
                 self.tpm_limiter._level + tokens_needed
                 > self.tpm_limiter.max_rate * 0.9
@@ -1040,7 +1108,10 @@ class RateLimitCompleter:
                     #     f"Token limit no longer reached: {self.tpm_limiter._level} / {self.tpm_limiter.max_rate}"
                     # )
 
-            try:
+
+            # 3.2.1 kvcache level token limit
+            # await self.kvcache_token_semaphore.acquire(tokens_needed)
+            async with self.kvcache_token_semaphore.use(tokens_needed):
                 # 4. Call the API (retry logic)
                 for num_attempt in range(1, MAX_RETRY + 1):
                     tic = time.monotonic()
@@ -1146,8 +1217,6 @@ class RateLimitCompleter:
                     await self.rpm_limiter.acquire(1)
                     await self.tpm_limiter.acquire(tokens_needed)
                     # await self.kvcache_token_semaphore.acquire(tokens_needed) # already acquired
-            finally:
-                self.kvcache_token_semaphore.release(tokens_needed)
 
             toc = time.monotonic()
             latency = toc - tic
@@ -1765,9 +1834,9 @@ class ExceptionWithMeta(Exception):
 _completers: dict[str, RateLimitCompleter] = {}
 
 
-def get_completer(model: str) -> RateLimitCompleter:
+def get_completer(model: str, lazy_wake_up=False) -> RateLimitCompleter:
     if model not in _completers:
-        _completers[model] = RateLimitCompleter(model_name=model)
+        _completers[model] = RateLimitCompleter(model_name=model, lazy_wake_up=lazy_wake_up)
     return _completers[model]
 
 
@@ -2018,13 +2087,33 @@ def create_batch(
         raise ValueError(f"Workspace {workspace} already exists.")
     return get_batch(model, workspace)
 
-def warmup_model(model):
+def warmup_models(models: list[str] | str):
+    if isinstance(models, str):
+        models = [models]
     start_time = time.time()
-    selector = _get_selector(model)
-    for model in selector.models:
-        completer = get_completer(model)
+    for model in models:
+        selector = _get_selector(model)
+        for model in selector.models:
+            if model not in _completers:
+                completer = get_completer(model, lazy_wake_up=True)
+                completer.vllm_sleep_mode_manager.auto_wake_up()
     end_time = time.time()
     logger.info(f"Warmup {model} took {end_time - start_time:.2f} seconds.")
+
+async def awarmup_models(models: list[str] | str):
+    if isinstance(models, str):
+        models = [models]
+    start_time = time.time()
+    for model in models:
+        selector = _get_selector(model)
+        tasks = []
+        for model in selector.models:
+            if model not in _completers:
+                completer = get_completer(model, lazy_wake_up=True)
+                tasks.append(completer.vllm_sleep_mode_manager.aauto_wake_up())
+    await asyncio.gather(*tasks)
+    end_time = time.time()
+    logger.info(f"Async warmup {model} took {end_time - start_time:.2f} seconds.")
 
 async def _async_index_wrap(task, i, semaphore=None):
     if semaphore:

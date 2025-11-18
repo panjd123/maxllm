@@ -9,7 +9,7 @@ from datasets import load_dataset
 from timeit import default_timer as timer
 import tiktoken
 
-from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_model, get_call_status, get_maxllm_config_path
+from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_models, get_call_status, get_maxllm_config_path
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
 console = Console()
@@ -20,7 +20,7 @@ def sleep(model: str = typer.Argument(..., help="Model name to put to sleep")):
     """Put a local model to sleep."""
     try:
         completer = get_completer(model)
-        completer._vllm_sleep()
+        completer.vllm_sleep_mode_manager.sleep()
         console.print(f"[green]✓[/green] Model '{model}' has been put to sleep")
     except Exception as e:
         console.print(f"[red]✗[/red] Error: {e}")
@@ -32,7 +32,7 @@ def is_sleep(model: str = typer.Argument(..., help="Model name to check")):
     """Check if a local model is sleeping."""
     try:
         completer = get_completer(model)
-        sleeping = completer._vllm_is_sleep()
+        sleeping = completer.vllm_sleep_mode_manager.is_sleep()
         if sleeping:
             console.print(f"[yellow]Model '{model}' is sleeping[/yellow]")
         else:
@@ -47,7 +47,7 @@ def wakeup(model: str = typer.Argument(..., help="Model name to wake up")):
     """Wake up a local model."""
     try:
         completer = get_completer(model)
-        completer._vllm_wake_up()
+        completer.vllm_sleep_mode_manager.wake_up()
         console.print(f"[green]✓[/green] Model '{model}' has been woken up")
     except Exception as e:
         console.print(f"[red]✗[/red] Error: {e}")
@@ -112,7 +112,7 @@ def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"),
         messages_list.append(messages)
         
     console.print(f"[cyan]Benchmarking model '{model}' with {num_prompt} prompts...[/cyan]")
-    warmup_model(model)
+    warmup_models([model])
     tasks = []
     for messages in messages_list:
         tasks.append(async_openai_complete(model=model, messages=messages, max_tokens=512, force=True))
