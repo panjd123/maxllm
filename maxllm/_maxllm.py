@@ -1133,10 +1133,12 @@ class RateLimitCompleter:
                             if json_mode:
                                 if self.json_mode_compatible:
                                     kwargs["response_format"] = {"type": "json_object"}
-                                elif self.json_format_compatible:
-                                    kwargs["response_format"] = type_to_response_format(
-                                        AnyModel
-                                    )
+                                else:
+                                    pass # DO NOTHING
+                                # elif self.json_format_compatible:
+                                #     kwargs["response_format"] = type_to_response_format(
+                                #         AnyModel
+                                #     )
                             elif json_format:
                                 if self.json_format_compatible:
                                     kwargs["response_format"] = type_to_response_format(
@@ -1206,9 +1208,6 @@ class RateLimitCompleter:
                             _call_status[self.model_unique_name][
                                 "validation_errors"
                             ] += 1
-                            logger.warning(
-                                f"ValidationError encountered: {content} - Retry {num_attempt}"
-                            )
                     except Exception as e:
                         # logger.error(f"Non-retryable error: {type(e).__name__} - {e}")
                         raise e

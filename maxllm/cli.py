@@ -85,13 +85,13 @@ def ccompatibility(model: str = typer.Argument(..., help="Model name to test com
         console.print(f"[red]✗[/red] Error: {e}")
         raise typer.Exit(1)
 
-# maxllm benchmark Qwen3-4B-A100    28.26s  3.53qps
-# maxllm benchmark Qwen3-4B-4090    72.57s  1.36qps
-# maxllm benchmark Qwen3-4B-3090    91.38s  1.08qps
-# maxllm benchmark Qwen3-4B-A100+Qwen3-4B-4090+Qwen3-4B-3090  21.56s  4.64qps
+# maxllm benchmark Qwen3-4B-A100    54.74s  3.65qps
+# maxllm benchmark Qwen3-4B-4090    160.59s  1.25qps
+# maxllm benchmark Qwen3-4B-3090    206.50s  0.97qps
+# maxllm benchmark Qwen3-4B-A100+Qwen3-4B-4090+Qwen3-4B-3090  37.95s  5.27qps
 @app.command()
 def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"), 
-              num_prompt: int = typer.Option(100, "--num-prompt", "-n", help="Number of prompts to generate"),
+              num_prompt: int = typer.Option(200, "--num-prompt", "-n", help="Number of prompts to generate"),
               max_tokens: int = typer.Option(4096, "--max-tokens", "-t", help="Maximum tokens for input")
               ):
     console.print(f"[cyan]Preparing benchmark for model '{model}'...[/cyan]")
