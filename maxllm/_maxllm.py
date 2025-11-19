@@ -1898,6 +1898,13 @@ class WeightedCompleterSelector:
         self.weights = weights
         self.current = [0] * len(weights)
         self.weight_sum = sum(weights)
+        self.model_unique_name = None
+        model_unique_names = [
+            find_best_model_config(model).get("litellm_params", {}).get("model_unique_name", model) for model in models
+        ]
+        model_unique_names_set = set(model_unique_names)
+        model_unique_names = sorted(list(model_unique_names_set))
+        self.model_unique_name = "+".join(model_unique_names)
 
     def next(self):
         if not self.models:
@@ -2096,25 +2103,27 @@ def create_batch(
         raise ValueError(f"Workspace {workspace} already exists.")
     return get_batch(model, workspace)
 
-def warmup_models(models: list[str] | str):
-    if isinstance(models, str):
-        models = [models]
+def warmup_models(models: list[str]):
     start_time = time.time()
+    model_unique_names = []
     for model in models:
         selector = _get_selector(model)
         for model in selector.models:
             if model not in _completers:
                 completer = get_completer(model, lazy_wake_up=True)
                 completer.vllm_sleep_mode_manager.auto_wake_up()
+        model_unique_names.append(selector.model_unique_name)
     end_time = time.time()
     logger.info(f"Warmup {model} took {end_time - start_time:.2f} seconds.")
+    return model_unique_names
+    
 
-async def awarmup_models(models: list[str] | str):
-    if isinstance(models, str):
-        models = [models]
+async def awarmup_models(models: list[str]):
     start_time = time.time()
+    model_unique_names = []
     for model in models:
         selector = _get_selector(model)
+        model_unique_names.append(selector.model_unique_name)
         tasks = []
         for model in selector.models:
             if model not in _completers:
@@ -2123,6 +2132,7 @@ async def awarmup_models(models: list[str] | str):
     await asyncio.gather(*tasks)
     end_time = time.time()
     logger.info(f"Async warmup {model} took {end_time - start_time:.2f} seconds.")
+    return model_unique_names
 
 async def _async_index_wrap(task, i, semaphore=None):
     if semaphore:
