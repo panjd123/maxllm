@@ -2196,6 +2196,63 @@ async def batch_async_tqdm(
     ordered_results = [results[i] for i in range(len(results))]
     return ordered_results
 
+class Throttle:
+    def __init__(self, interval=20):
+        self.interval = interval
+        self._last = 0
+
+    def ok(self):
+        now = time.time()
+        if now - self._last >= self.interval:
+            self._last = now
+            return True
+        return False
+
+    def run(self, action):
+        if self.ok():
+            action()
+
+async def batch_async_tqdm_with_call_status(
+    tasks,
+    concurrency: Optional[int] = None,
+    smoothing=0.3,
+    miniters=1,
+    desc="Async task",
+    call_status_interval=10,
+    result_handler=None,
+    raise_exceptions=True,
+    **tqdm_kwargs,
+):
+    if concurrency is None or concurrency <= 0:
+        semaphore = None
+    else:
+        semaphore = AutoLoopBigSemaphore(concurrency)
+    indexed_tasks = [
+        _async_index_wrap(t, i, semaphore=semaphore) for i, t in enumerate(tasks)
+    ]
+    results = {}
+    throttle = Throttle(interval=call_status_interval)
+    for task in tqdm(
+        asyncio.as_completed(indexed_tasks),
+        total=len(tasks),
+        smoothing=smoothing,
+        miniters=miniters,
+        desc=desc,
+        **tqdm_kwargs,
+    ):
+        try:
+            result, i = await task
+        except ExceptionWithMeta as e:
+            result, i = e.original_exception, e.meta
+            if raise_exceptions:
+                raise e.original_exception from e
+        results[i] = result
+        if result_handler:
+            result_handler(result, i)
+        throttle.run(lambda: logger.info(f"maxllm call status: {get_call_status()}"))
+    ordered_results = [results[i] for i in range(len(results))]
+    logger.info(f"Final maxllm call status: {get_call_status()}")
+    return ordered_results
 
 async def batch_async_shared_tqdm(
     tasks,

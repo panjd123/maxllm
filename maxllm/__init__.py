@@ -8,6 +8,7 @@ from ._maxllm import (
     batch_embedding,
     batch_async_tqdm,
     batch_async_shared_tqdm,
+    batch_async_tqdm_with_call_status,
     set_request_flag,
     diff_call_status,
     get_completer,
