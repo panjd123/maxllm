@@ -324,10 +324,12 @@ def diff_call_status(
     after: str
 ):
     before = json.loads(before)
-    agter = json.loads(after)
+    after = json.loads(after)
     diff = {}
-    for key in before:
-        diff[key] = after[key] - before[key]
+    for model in after:
+        diff[model] = {}
+        for key in after[model]:
+            diff[model][key] = after[model][key] - before.get(model, {}).get(key, 0)
     return json.dumps(diff, indent=2, ensure_ascii=False)
 
 
@@ -2270,7 +2272,7 @@ async def batch_async_tqdm_with_call_status(
     ]
     results = {}
     throttle = Throttle(interval=call_status_interval)
-    last_call_status = _create_call_status()
+    last_call_status = get_call_status()
     
     def report_call_status():
         nonlocal last_call_status
@@ -2295,7 +2297,7 @@ async def batch_async_tqdm_with_call_status(
         results[i] = result
         if result_handler:
             result_handler(result, i)
-        throttle.run(report)
+        throttle.run(report_call_status)
     ordered_results = [results[i] for i in range(len(results))]
     logger.info(f"Final maxllm call status: {get_call_status()}")
     return ordered_results
