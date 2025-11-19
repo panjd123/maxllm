@@ -51,12 +51,18 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    
+    need_stream = True
+    for h in logger.handlers:
+        if isinstance(h, logging.StreamHandler):
+            need_stream = False
+            break
+
+    if need_stream:
+        h = logging.StreamHandler()
+        fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        h.setFormatter(fmt)
+        logger.addHandler(h)
 
 path = os.getenv("MAXLLM_DOTENV_PATH", None) or find_dotenv(usecwd=True)
 
@@ -1127,6 +1133,7 @@ class RateLimitCompleter:
                     rate_limit_type = ""
                     try:
                         if json_format and self.openai_parse_compatible:
+                            # deprecated, should never reach here
                             response = await self.async_client.responses.parse(
                                 model=self.model,
                                 input=messages,
@@ -1152,14 +1159,23 @@ class RateLimitCompleter:
                                     kwargs["response_format"] = {"type": "json_object"}
                                 else:
                                     pass  # kwargs["response_format"] = {"type": "text"}
-                            if "max_output_tokens" in kwargs:
+                                
+                            if "max_output_tokens" in kwargs: # /parse end-point use "max_output_tokens", we turn it to "max_tokens" to be compatible with chat.completions and completions end-point
                                 kwargs["max_tokens"] = kwargs.pop("max_output_tokens")
 
                             if call_method == "completions":
+                                if "max_completion_tokens" in kwargs: # completions only support max_tokens
+                                    kwargs["max_tokens"] = kwargs.pop(
+                                        "max_completion_tokens"
+                                    )
                                 response = await self.async_client.completions.create(
                                     model=self.model, prompt=prompt, **kwargs
                                 )
                             else:
+                                if "max_tokens" in kwargs:
+                                    kwargs["max_completion_tokens"] = kwargs.pop( # "max_tokens" is not compatible with o-series models.
+                                        "max_tokens"
+                                    )
                                 response = (
                                     await self.async_client.chat.completions.create(
                                         model=self.model,
