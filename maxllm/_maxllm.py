@@ -2258,7 +2258,7 @@ async def batch_async_tqdm_with_call_status(
     smoothing=0.3,
     miniters=1,
     desc="Async task",
-    call_status_interval=10,
+    call_status_interval=60,
     result_handler=None,
     raise_exceptions=True,
     **tqdm_kwargs,
