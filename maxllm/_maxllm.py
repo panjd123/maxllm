@@ -2169,10 +2169,10 @@ def warmup_models(models: list[str]):
 async def awarmup_models(models: list[str]):
     start_time = time.time()
     model_unique_names = []
+    tasks = []
     for model in models:
         selector = _get_selector(model)
         model_unique_names.append(selector.model_unique_name)
-        tasks = []
         for model in selector.models:
             if model not in _completers:
                 completer = get_completer(model, lazy_wake_up=True)
