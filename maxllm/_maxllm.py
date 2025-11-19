@@ -2103,6 +2103,10 @@ def create_batch(
         raise ValueError(f"Workspace {workspace} already exists.")
     return get_batch(model, workspace)
 
+def get_model_unique_name(model: str) -> str:
+    selector = _get_selector(model)
+    return selector.model_unique_name
+
 def warmup_models(models: list[str]):
     start_time = time.time()
     model_unique_names = []
