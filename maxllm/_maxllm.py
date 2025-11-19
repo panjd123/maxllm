@@ -320,8 +320,8 @@ RETRYABLE_EXCEPTIONS = (
 
 
 def diff_call_status(
+    after: str,
     before: str,
-    after: str
 ):
     before = json.loads(before)
     after = json.loads(after)
@@ -2277,7 +2277,7 @@ async def batch_async_tqdm_with_call_status(
     def report_call_status():
         nonlocal last_call_status
         now_call_status = get_call_status()
-        logger.info(f"maxllm call status: {diff_call_status(last_call_status, now_call_status)}")
+        logger.info(f"maxllm call status: {diff_call_status(now_call_status, last_call_status)}")
         last_call_status = now_call_status
     
     for task in tqdm(
