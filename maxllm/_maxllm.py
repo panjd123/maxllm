@@ -560,6 +560,10 @@ def find_best_model_config(target_name: str, model_list: list = _litellm_model_l
             logger.error(
                 f"Model name pattern and litellm_params.model pattern star count mismatch for {best_item}"
             )
+            
+    if "model_unique_name" not in best_item["litellm_params"]:
+        best_item["litellm_params"]["model_unique_name"] = best_item["litellm_params"]["model"]
+
     return best_item
 
 
