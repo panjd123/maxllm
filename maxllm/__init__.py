@@ -13,6 +13,7 @@ from ._maxllm import (
     get_completer,
     warmup_models,
     awarmup_models,
+    get_model_unique_name,
     ExceptionWithMeta,
     RateLimitCompleter,
 )
