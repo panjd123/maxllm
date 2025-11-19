@@ -994,6 +994,7 @@ class RateLimitCompleter:
                     call_method = "embeddings"
 
             cache_kwargs = kwargs.copy()
+            
             cache_params = (
                 messages,
                 json_mode,
@@ -1001,6 +1002,21 @@ class RateLimitCompleter:
                 call_method,
                 tuple(sorted(cache_kwargs.items())),
             )
+            
+            attempt_cache_kwargs = kwargs.copy()
+            attempt_cache_kwargs.pop("timeout", None)
+            attempt_cache_kwargs.pop("max_tokens", None)
+            attempt_cache_kwargs.pop("max_output_tokens", None)
+            attempt_cache_kwargs.pop("max_completion_tokens", None)
+            
+            attempt_cache_params = (
+                messages,
+                json_mode,
+                json_format_schema,
+                call_method,
+                tuple(sorted(attempt_cache_kwargs.items())),
+            )
+            
             request_flag = request_flag or global_request_flag
             if request_flag:
                 cache_params += (request_flag,)
@@ -1011,7 +1027,11 @@ class RateLimitCompleter:
             if no_read_cache_flag and no_write_cache_flag:
                 cache_key = None
             else:
-                cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
+                attempt_cache_key = hashlib.md5(pickle.dumps(attempt_cache_params)).hexdigest()
+                if attempt_cache_key in self.cache:
+                    cache_key = attempt_cache_key
+                else:
+                    cache_key = hashlib.md5(pickle.dumps(cache_params)).hexdigest()
 
             if not no_read_cache_flag and cache_key in self.cache:
                 cached_response = self.cache[cache_key]
