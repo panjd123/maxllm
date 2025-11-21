@@ -678,10 +678,12 @@ class AutoLoopBigSemaphore:
 
 class VLLMSleepModeManager:
     vllm_api_base: str
-    def __init__(self, vllm_api_base: str):
+    def __init__(self, vllm_api_base: Optional[str] = None):
         self.vllm_api_base = vllm_api_base
         
     def is_sleep(self) -> bool:
+        if not self.vllm_api_base:
+            return False
         url = osp.join(self.vllm_api_base, "is_sleeping")
         try:
             with requests.get(url) as resp:
@@ -698,6 +700,8 @@ class VLLMSleepModeManager:
         return False
     
     async def ais_sleep(self) -> bool:
+        if not self.vllm_api_base:
+            return False
         url = osp.join(self.vllm_api_base, "is_sleeping")
         try:
             async with aiohttp.ClientSession() as session:
@@ -715,6 +719,8 @@ class VLLMSleepModeManager:
         return False
     
     def sleep(self):
+        if not self.vllm_api_base:
+            return
         url = osp.join(self.vllm_api_base, "sleep?level=1")
         try:
             with requests.post(url) as resp:
@@ -726,6 +732,8 @@ class VLLMSleepModeManager:
             logger.error(f"VLLM model sleep error: {e}")
             
     async def asleep(self):
+        if not self.vllm_api_base:
+            return
         url = osp.join(self.vllm_api_base, "sleep?level=1")
         try:
             async with aiohttp.ClientSession() as session:
@@ -738,6 +746,8 @@ class VLLMSleepModeManager:
             logger.error(f"VLLM model sleep error: {e}")
     
     def wake_up(self):
+        if not self.vllm_api_base:
+            return
         url = osp.join(self.vllm_api_base, "wake_up")
         try:
             with requests.post(url) as resp:
@@ -749,6 +759,8 @@ class VLLMSleepModeManager:
             logger.error(f"VLLM model wake_up error: {e}")
             
     async def awake_up(self):
+        if not self.vllm_api_base:
+            return
         url = osp.join(self.vllm_api_base, "wake_up")
         try:
             async with aiohttp.ClientSession() as session:
@@ -843,6 +855,8 @@ class RateLimitCompleter:
             self.vllm_sleep_mode_manager = VLLMSleepModeManager(vllm_api_base)
             if not lazy_wake_up:
                 self.vllm_sleep_mode_manager.auto_wake_up()
+        else:
+            self.vllm_sleep_mode_manager = VLLMSleepModeManager(None)
 
         self.enable_call_status = True
 

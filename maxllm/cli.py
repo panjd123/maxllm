@@ -8,8 +8,9 @@ import asyncio
 from datasets import load_dataset
 from timeit import default_timer as timer
 import tiktoken
+import multiprocessing as mp
 
-from ._maxllm import get_completer, async_openai_complete, batch_async_tqdm, warmup_models, get_call_status, get_maxllm_config_path
+from ._maxllm import get_completer, _get_selector, async_openai_complete, batch_async_tqdm, warmup_models, get_call_status, get_maxllm_config_path, awarmup_models
 from .compatibility import compatibility_test
 
 app = typer.Typer(help="MaxLLM CLI - Unified OpenAI API client with rate limiting and caching")
@@ -85,16 +86,7 @@ def ccompatibility(model: str = typer.Argument(..., help="Model name to test com
         console.print(f"[red]✗[/red] Error: {e}")
         raise typer.Exit(1)
 
-# maxllm benchmark Qwen3-4B-A100    54.74s  3.65qps
-# maxllm benchmark Qwen3-4B-4090    160.59s  1.25qps
-# maxllm benchmark Qwen3-4B-3090    206.50s  0.97qps
-# maxllm benchmark Qwen3-4B-A100+Qwen3-4B-4090+Qwen3-4B-3090  37.95s  5.27qps
-@app.command()
-def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"), 
-              num_prompt: int = typer.Option(200, "--num-prompt", "-n", help="Number of prompts to generate"),
-              max_tokens: int = typer.Option(4096, "--max-tokens", "-t", help="Maximum tokens for input")
-              ):
-    console.print(f"[cyan]Preparing benchmark for model '{model}'...[/cyan]")
+def prepare_benchmark_prompts(num_prompt: int, max_tokens: int):
     subset = "narrativeqa"
     enc = tiktoken.encoding_for_model("gpt-4o-mini")
 
@@ -122,18 +114,67 @@ def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"),
         ]
         messages_list.append(messages)
         
-    console.print(f"[cyan]Benchmarking model '{model}' with {num_prompt} prompts...[/cyan]")
+    return messages_list
+
+def benchmark_single_model(model: str, messages_list: list[dict], max_output_tokens: int, pbar_postion: int = 0):
     warmup_models([model])
     tasks = []
     for messages in messages_list:
-        tasks.append(async_openai_complete(model=model, messages=messages, max_tokens=512, force=True))
+        tasks.append(async_openai_complete(model=model, messages=messages, max_tokens=max_output_tokens, force=True))
     start_time = timer()
-    responses = asyncio.run(batch_async_tqdm(tasks, desc="Benchmarking"))
+    responses = asyncio.run(batch_async_tqdm(tasks, desc=f"Benchmarking {model}", position=pbar_postion))
     end_time = timer()
     call_status = get_call_status()
+    seconds_taken = end_time - start_time
+    qps = len(messages_list) / seconds_taken
+    return seconds_taken, qps, call_status
+
+def benchmark_multi_models(models: list[str], num_prompt: int, max_tokens: int, max_output_tokens: int):
+    messages_list = prepare_benchmark_prompts(num_prompt, max_tokens)
+    tune_model_name = []
+    with mp.Pool(processes=len(models)) as pool:
+        results = []
+        for i, model in enumerate(models):
+            results.append(pool.apply_async(benchmark_single_model, args=(model, messages_list, max_output_tokens, i)))
+        pool.close()
+        pool.join()
+        for model, result in zip(models, results):
+            seconds_taken, qps, call_status = result.get()
+            console.print(f"[green]Model: {model} | Time: {seconds_taken:.2f}s | QPS: {qps:.2f}[/green]")
+            tune_model_name.append(f"{model}:{qps:.2f}")
+    console.print(f"[cyan]Recommended tuned model string: {'+'.join(tune_model_name)}[/cyan]")
+    
+
+# maxllm benchmark Qwen3-4B-A100    54.74s  3.65qps
+# maxllm benchmark Qwen3-4B-4090    160.59s  1.25qps
+# maxllm benchmark Qwen3-4B-3090    206.50s  0.97qps
+# maxllm benchmark Qwen3-4B-A100+Qwen3-4B-4090+Qwen3-4B-3090  37.95s  5.27qps
+@app.command()
+def benchmark(model: str = typer.Argument(..., help="Model name to benchmark"), 
+              num_prompt: int = typer.Option(200, "--num-prompt", "-n", help="Number of prompts to generate"),
+              max_tokens: int = typer.Option(4096, "--max-tokens", "-t", help="Maximum tokens for input"),
+              max_output_tokens: int = typer.Option(512, "--max-output-tokens", "-o", help="Maximum tokens for output")
+              ):
+    console.print(f"[cyan]Preparing benchmark prompt for model '{model}'...[/cyan]")
+    messages_list = prepare_benchmark_prompts(num_prompt, max_tokens)
+    console.print(f"[cyan]Benchmarking model '{model}' with {num_prompt} prompts...[/cyan]")
+    warmup_models([model])
+    seconds_taken, qps, call_status = benchmark_single_model(model, messages_list, max_output_tokens)
     console.print(f"[green]Call status: {call_status}[/green]")
-    console.print(f"[green]Benchmark completed in {end_time - start_time:.2f} seconds[/green]")
-    console.print(f"[green]Average requests per second: {num_prompt / (end_time - start_time):.2f}[/green]")
+    console.print(f"[green]Benchmark completed in {seconds_taken:.2f} seconds[/green]")
+    console.print(f"[green]Average requests per second: {qps:.2f}[/green]")
+
+# maxllm tune llama-A100+llama-A6000+llama-4090+llama-3090 --num-prompt 200 --max-tokens 2420 --max-output-tokens 50
+@app.command()
+def tune(model: str = typer.Argument(..., help="Model name to benchmark"), 
+              num_prompt: int = typer.Option(200, "--num-prompt", "-n", help="Number of prompts to generate"),
+              max_tokens: int = typer.Option(4096, "--max-tokens", "-t", help="Maximum tokens for input"),
+              max_output_tokens: int = typer.Option(512, "--max-output-tokens", "-o", help="Maximum tokens for output")
+              ):
+    models = _get_selector(model).models
+    console.print(f"[cyan]Tuning and benchmarking models: {models} with {num_prompt} prompts...[/cyan]")
+    benchmark_multi_models(models, num_prompt, max_tokens, max_output_tokens)
+    
 
 @app.command()
 def edit(editor: str = typer.Argument("code", help="Editor to use")):
