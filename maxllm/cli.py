@@ -239,6 +239,27 @@ def chat(
         raise typer.Exit(1)
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind the server to"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to run the server on"),
+    reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
+):
+    """Start the OpenAI-compatible API server."""
+    import uvicorn
+    console.print(f"[cyan]Starting MaxLLM API Server on {host}:{port}...[/cyan]")
+    console.print(f"[green]OpenAPI docs available at http://{host}:{port}/docs[/green]")
+
+    uvicorn.run(
+        "maxllm.server:app",
+        host=host,
+        port=port,
+        reload=reload,
+        workers=workers if not reload else 1,  # Can't use multiple workers with reload
+    )
+
+
 def main():
     """Entry point for the CLI."""
     app()

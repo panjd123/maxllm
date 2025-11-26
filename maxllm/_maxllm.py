@@ -387,7 +387,11 @@ def get_call_status(model: Optional[str] = None):
 
 
 def _get_response_tokens(response):
-    usage: ResponseUsage | CompletionUsage | EmbeddingUsage = response.usage
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        # No usage information available (e.g., score/rerank responses)
+        return (0, 0, 0, 0, 0)
+
     if isinstance(usage, ResponseUsage):
         input_tokens = usage.input_tokens
         input_cached_tokens = usage.input_tokens_details.cached_tokens
@@ -412,14 +416,37 @@ def _get_response_tokens(response):
         output_tokens = 0
         output_reasoning_tokens = 0
     else:
-        logger.error(f"Unknown usage type: {type(usage)}")
+        # Handle custom response types (e.g., MockScoreResponse)
+        input_tokens = getattr(usage, "prompt_tokens", 0)
+        input_cached_tokens = 0
+        output_tokens = getattr(usage, "completion_tokens", 0)
+        output_reasoning_tokens = 0
+
+    total_tokens = getattr(usage, "total_tokens", input_tokens + output_tokens)
     return (
         input_tokens,
         input_cached_tokens,
         output_tokens,
         output_reasoning_tokens,
-        usage.total_tokens,
+        total_tokens,
     )
+
+
+class MockUsage:
+    """Mock usage class for score/rerank responses."""
+    def __init__(self, data: dict):
+        self.prompt_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+        self.completion_tokens = 0
+        self.total_tokens = data.get("usage", {}).get("total_tokens", self.prompt_tokens)
+        self.prompt_tokens_details = None
+        self.completion_tokens_details = None
+
+
+class MockScoreResponse:
+    """Mock response class for score/rerank API responses."""
+    def __init__(self, data: dict):
+        self.data = data
+        self.usage = MockUsage(data)
 
 
 # Find config file in the following order:
@@ -955,8 +982,9 @@ class RateLimitCompleter:
         messages: List[dict] = [],
         json_mode: bool = False,
         json_format: Optional[BaseModel] = None,
+        response_format: Optional[dict] = None,  # Direct passthrough for API server
         call_method: Literal[
-            "auto", "chat.completions", "embeddings", "responses.parse", "completions"
+            "auto", "chat.completions", "embeddings", "responses.parse", "completions", "rerank", "score"
         ] = "auto",
         raw: bool = False,
         force: bool = False,
@@ -977,21 +1005,30 @@ class RateLimitCompleter:
                             prompt = kwargs.pop(key)
                             break
 
-            if not prompt and not messages:
+            # Detect rerank/score model early
+            is_rerank_model = "rerank" in self.model.lower()
+
+            # For rerank/score, we don't need prompt or messages
+            is_rerank_score_call = call_method in ("rerank", "score") or (
+                call_method == "auto" and is_rerank_model
+            )
+
+            if not is_rerank_score_call and not prompt and not messages:
                 raise ValueError("'prompt' or 'messages' must be provided.")
 
-            # 2. Construct the messages list from inputs
-            if not messages:
-                messages = []
-                if system_prompt:
-                    messages.append({"role": "system", "content": system_prompt})
-                messages.extend(history_messages)
-                messages.append({"role": "user", "content": prompt})
-            else:
-                if prompt or system_prompt or history_messages:
-                    logger.warning(
-                        "'messages' is provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored."
-                    )
+            # 2. Construct the messages list from inputs (skip for rerank/score)
+            if not is_rerank_score_call:
+                if not messages:
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.extend(history_messages)
+                    messages.append({"role": "user", "content": prompt})
+                else:
+                    if prompt or system_prompt or history_messages:
+                        logger.warning(
+                            "'messages' is provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored."
+                        )
 
             # 2.1 Construct all params for caching
             json_format_schema = (
@@ -1003,6 +1040,8 @@ class RateLimitCompleter:
             if call_method == "auto":
                 if json_format and self.openai_parse_compatible:
                     call_method = "responses.parse"
+                elif is_rerank_model:
+                    call_method = "score"  # Default to score for rerank models
                 elif not self.is_embedding_model:
                     if "logprobs" in kwargs or "echo" in kwargs:
                         call_method = "completions"
@@ -1038,6 +1077,7 @@ class RateLimitCompleter:
             request_flag = request_flag or global_request_flag
             if request_flag:
                 cache_params += (request_flag,)
+                attempt_cache_params += (request_flag,)
 
             no_read_cache_flag = global_recache_flag or force
             no_write_cache_flag = force
@@ -1095,7 +1135,27 @@ class RateLimitCompleter:
             # 3. rate limiting
 
             # 3.1 request limiting
-            if self.is_embedding_model:
+            if is_rerank_score_call:
+                # Estimate tokens for rerank/score based on text_1/text_2 or query/documents
+                text_1 = kwargs.get("text_1", "")
+                text_2 = kwargs.get("text_2", "")
+                query = kwargs.get("query", "")
+                documents = kwargs.get("documents", [])
+
+                if text_1 and text_2:
+                    if isinstance(text_2, list):
+                        estimate_input_tokens_base = self.estimate_tokens(text_1) + sum(
+                            self.estimate_tokens(t) for t in text_2
+                        )
+                    else:
+                        estimate_input_tokens_base = self.estimate_tokens(text_1) + self.estimate_tokens(text_2)
+                elif query and documents:
+                    estimate_input_tokens_base = self.estimate_tokens(query) + sum(
+                        self.estimate_tokens(d) for d in documents
+                    )
+                else:
+                    estimate_input_tokens_base = 100  # Default estimate
+            elif self.is_embedding_model:
                 if isinstance(prompt, list):
                     estimate_input_tokens_base = sum(
                         self.estimate_tokens(p) for p in prompt
@@ -1178,16 +1238,89 @@ class RateLimitCompleter:
                                 text_format=json_format,
                                 **kwargs,
                             )
-                        elif not self.is_embedding_model:
-                            if json_mode:
+                        elif call_method in ("rerank", "score"):
+                            # Handle rerank/score via direct HTTP call
+                            query = kwargs.pop("query", None)
+                            documents = kwargs.pop("documents", None)
+                            text_1 = kwargs.pop("text_1", None)
+                            text_2 = kwargs.pop("text_2", None)
+
+                            if call_method == "score":
+                                # Score endpoint
+                                score_url = f"{self.api_base}/score"
+                                payload = {"model": self.model}
+                                if text_1 is not None and text_2 is not None:
+                                    payload["text_1"] = text_1
+                                    payload["text_2"] = text_2
+                                elif query is not None and documents is not None:
+                                    # Convert to text_1/text_2 format for single doc
+                                    if isinstance(documents, str):
+                                        payload["text_1"] = query
+                                        payload["text_2"] = documents
+                                    else:
+                                        # Multiple documents - use batch scoring
+                                        payload["text_1"] = query
+                                        payload["text_2"] = documents
+                                payload.update(kwargs)
+                            else:
+                                # Rerank endpoint
+                                score_url = f"{self.api_base}/rerank"
+                                payload = {
+                                    "model": self.model,
+                                    "query": query,
+                                    "documents": documents,
+                                }
+                                payload.update(kwargs)
+
+                            async with aiohttp.ClientSession() as session:
+                                async with session.post(
+                                    score_url,
+                                    json=payload,
+                                    headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+                                ) as resp:
+                                    if resp.status != 200:
+                                        error_text = await resp.text()
+                                        raise Exception(f"Score/Rerank API error: {resp.status} - {error_text}")
+                                    response_data = await resp.json()
+
+                            response = MockScoreResponse(response_data)
+
+                            if raw:
+                                content = response_data
+                            elif call_method == "score":
+                                # Return score(s)
+                                if "data" in response_data:
+                                    scores = [item.get("score", item.get("similarity", 0)) for item in response_data["data"]]
+                                    content = scores[0] if len(scores) == 1 else scores
+                                else:
+                                    content = response_data.get("score", response_data.get("similarity", 0))
+                            else:
+                                # Return reranked results
+                                content = response_data.get("results", response_data.get("data", []))
+
+                        elif call_method == "embeddings" or self.is_embedding_model:
+                            response = await self.async_client.embeddings.create(
+                                model=self.model,
+                                input=prompt,
+                                **kwargs,
+                            )
+                            if raw:
+                                content = response
+                            else:
+                                content = (
+                                    [emb.embedding for emb in response.data]
+                                    if isinstance(prompt, list)
+                                    else response.data[0].embedding
+                                )
+                        else:
+                            # Handle response_format: direct passthrough takes priority
+                            if response_format is not None:
+                                kwargs["response_format"] = response_format
+                            elif json_mode:
                                 if self.json_mode_compatible:
                                     kwargs["response_format"] = {"type": "json_object"}
                                 else:
                                     pass # DO NOTHING
-                                # elif self.json_format_compatible:
-                                #     kwargs["response_format"] = type_to_response_format(
-                                #         AnyModel
-                                #     )
                             elif json_format:
                                 if self.json_format_compatible:
                                     kwargs["response_format"] = type_to_response_format(
@@ -1197,7 +1330,7 @@ class RateLimitCompleter:
                                     kwargs["response_format"] = {"type": "json_object"}
                                 else:
                                     pass  # kwargs["response_format"] = {"type": "text"}
-                                
+
                             if "max_output_tokens" in kwargs: # /parse end-point use "max_output_tokens", we turn it to "max_tokens" to be compatible with chat.completions and completions end-point
                                 kwargs["max_tokens"] = kwargs.pop("max_output_tokens")
 
@@ -1221,35 +1354,23 @@ class RateLimitCompleter:
                                         **kwargs,
                                     )
                                 )
-                        else:
-                            response = await self.async_client.embeddings.create(
-                                model=self.model,
-                                input=prompt,
-                                **kwargs,
-                            )
 
-                        if raw:
-                            content = response
-                        elif json_format and self.openai_parse_compatible:
-                            content = response.output_parsed.model_dump()
-                        elif not self.is_embedding_model:  # chat.completions
-                            if getattr(response, "choices", None):
-                                content = response.choices[0].message.content
-                            elif isinstance(getattr(response, "data", None), dict):
-                                choices = response.data.get("choices")
-                                if choices:
-                                    content = choices[0]["message"]["content"]
-                            if json_format:
-                                content = _parse_json_safely(
-                                    content, json_format=json_format
-                                )
-                                json_format.model_validate(content)
-                        else:
-                            content = (
-                                [emb.embedding for emb in response.data]
-                                if isinstance(prompt, list)
-                                else response.data[0].embedding
-                            )
+                            if raw:
+                                content = response
+                            elif json_format and self.openai_parse_compatible:
+                                content = response.output_parsed.model_dump()
+                            else:  # chat.completions
+                                if getattr(response, "choices", None):
+                                    content = response.choices[0].message.content
+                                elif isinstance(getattr(response, "data", None), dict):
+                                    choices = response.data.get("choices")
+                                    if choices:
+                                        content = choices[0]["message"]["content"]
+                                if json_format:
+                                    content = _parse_json_safely(
+                                        content, json_format=json_format
+                                    )
+                                    json_format.model_validate(content)
 
                     except openai.RateLimitError as e:
                         if num_attempt >= MAX_RETRY:
@@ -1352,8 +1473,9 @@ class RateLimitCompleter:
         messages: List[dict] = [],
         json_mode: bool = False,
         json_format: Optional[BaseModel] = None,
+        response_format: Optional[dict] = None,  # Direct passthrough for API server
         call_method: Literal[
-            "auto", "chat.completions", "embeddings", "responses.parse", "completions"
+            "auto", "chat.completions", "embeddings", "responses.parse", "completions", "rerank", "score"
         ] = "auto",
         raw: bool = False,
         force: bool = False,
@@ -1377,20 +1499,29 @@ class RateLimitCompleter:
         if self.is_local_model:
             kwargs["timeout"] = 99999  # no timeout for local model
 
-        if not prompt and not messages:
+        # Detect rerank/score model early
+        is_rerank_model = "rerank" in self.model.lower()
+
+        # For rerank/score, we don't need prompt or messages
+        is_rerank_score_call = call_method in ("rerank", "score") or (
+            call_method == "auto" and is_rerank_model
+        )
+
+        if not is_rerank_score_call and not prompt and not messages:
             raise ValueError("'prompt' or 'messages' must be provided.")
 
-        # 2. Construct the messages list from inputs
-        if not messages:
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            messages.extend(history_messages)
-            messages.append({"role": "user", "content": prompt})
-        elif prompt or system_prompt or history_messages:
-            logger.warning(
-                "'messages' is provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored."
-            )
+        # 2. Construct the messages list from inputs (skip for rerank/score)
+        if not is_rerank_score_call:
+            if not messages:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.extend(history_messages)
+                messages.append({"role": "user", "content": prompt})
+            elif prompt or system_prompt or history_messages:
+                logger.warning(
+                    "'messages' is provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored."
+                )
 
         # 2.1 Construct all params for caching
         json_format_schema = (
@@ -1402,6 +1533,8 @@ class RateLimitCompleter:
         if call_method == "auto":
             if json_format and self.openai_parse_compatible:
                 call_method = "responses.parse"
+            elif is_rerank_model:
+                call_method = "score"  # Default to score for rerank models
             elif not self.is_embedding_model:
                 if "logprobs" in kwargs or "echo" in kwargs:
                     call_method = "completions"
@@ -1503,8 +1636,76 @@ class RateLimitCompleter:
                         text_format=json_format,
                         **kwargs,
                     )
-                elif not self.is_embedding_model:
-                    if json_mode:
+                elif call_method in ("rerank", "score"):
+                    # Handle rerank/score via direct HTTP call
+                    query = kwargs.pop("query", None)
+                    documents = kwargs.pop("documents", None)
+                    text_1 = kwargs.pop("text_1", None)
+                    text_2 = kwargs.pop("text_2", None)
+
+                    if call_method == "score":
+                        # Score endpoint
+                        score_url = f"{self.api_base}/score"
+                        payload = {"model": self.model}
+                        if text_1 is not None and text_2 is not None:
+                            payload["text_1"] = text_1
+                            payload["text_2"] = text_2
+                        elif query is not None and documents is not None:
+                            if isinstance(documents, str):
+                                payload["text_1"] = query
+                                payload["text_2"] = documents
+                            else:
+                                payload["text_1"] = query
+                                payload["text_2"] = documents
+                        payload.update(kwargs)
+                    else:
+                        # Rerank endpoint
+                        score_url = f"{self.api_base}/rerank"
+                        payload = {
+                            "model": self.model,
+                            "query": query,
+                            "documents": documents,
+                        }
+                        payload.update(kwargs)
+
+                    headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+                    resp = requests.post(score_url, json=payload, headers=headers)
+                    if resp.status_code != 200:
+                        raise Exception(f"Score/Rerank API error: {resp.status_code} - {resp.text}")
+                    response_data = resp.json()
+
+                    response = MockScoreResponse(response_data)
+
+                    if raw:
+                        content = response_data
+                    elif call_method == "score":
+                        if "data" in response_data:
+                            scores = [item.get("score", item.get("similarity", 0)) for item in response_data["data"]]
+                            content = scores[0] if len(scores) == 1 else scores
+                        else:
+                            content = response_data.get("score", response_data.get("similarity", 0))
+                    else:
+                        content = response_data.get("results", response_data.get("data", []))
+
+                elif call_method == "embeddings" or self.is_embedding_model:
+                    response = self.client.embeddings.create(
+                        model=self.model,
+                        input=prompt,
+                        **kwargs,
+                    )
+                    if raw:
+                        content = response
+                    else:
+                        content = (
+                            [emb.embedding for emb in response.data]
+                            if isinstance(prompt, list)
+                            else response.data[0].embedding
+                        )
+                else:
+                    # Handle response_format: direct passthrough takes priority
+                    if response_format is not None:
+                        kwargs["response_format"] = response_format
+                    elif json_mode:
                         kwargs["response_format"] = {"type": "json_object"}
                     elif json_format:
                         if self.json_format_compatible:
@@ -1526,28 +1727,16 @@ class RateLimitCompleter:
                             messages=messages,
                             **kwargs,
                         )
-                else:
-                    response = self.client.embeddings.create(
-                        model=self.model,
-                        input=prompt,
-                        **kwargs,
-                    )
 
-                if raw:
-                    content = response
-                elif json_format and self.openai_parse_compatible:
-                    content = response.output_parsed.model_dump()
-                elif not self.is_embedding_model:
-                    content = response.choices[0].message.content
-                    if json_format:
-                        content = _parse_json_safely(content, json_format=json_format)
-                        json_format.model_validate(content)
-                else:
-                    content = (
-                        [emb.embedding for emb in response.data]
-                        if isinstance(prompt, list)
-                        else response.data[0].embedding
-                    )
+                    if raw:
+                        content = response
+                    elif json_format and self.openai_parse_compatible:
+                        content = response.output_parsed.model_dump()
+                    else:
+                        content = response.choices[0].message.content
+                        if json_format:
+                            content = _parse_json_safely(content, json_format=json_format)
+                            json_format.model_validate(content)
 
             except openai.RateLimitError as e:
                 if num_attempt >= MAX_RETRY:
@@ -1915,12 +2104,14 @@ async def _async_openai_complete_single_completer(
     messages: list[dict] = [],
     json_mode: bool = False,
     json_format: Optional[BaseModel] = None,
+    response_format: Optional[dict] = None,
     call_method: Literal[
-        "auto", "chat.completions", "embeddings", "responses.parse", "completions"
+        "auto", "chat.completions", "embeddings", "responses.parse", "completions", "rerank", "score"
     ] = "auto",
     raw=False,
     meta=None,
     force=False,
+    request_flag: Any = None,
     *args,
     **kwargs,
 ) -> str | dict | tuple[str | dict, Any] | Completion | Response | EmbeddingResponse:
@@ -1933,9 +2124,11 @@ async def _async_openai_complete_single_completer(
             messages,
             json_mode,
             json_format,
+            response_format=response_format,
             call_method=call_method,
             raw=raw,
             force=force,
+            request_flag=request_flag,
             *args,
             **kwargs,
         )
@@ -2043,12 +2236,14 @@ async def async_openai_complete(
     messages: list[dict] = [],
     json_mode: bool = False,
     json_format: Optional[BaseModel] = None,
+    response_format: Optional[dict] = None,
     call_method: Literal[
-        "auto", "chat.completions", "embeddings", "responses.parse", "completions"
+        "auto", "chat.completions", "embeddings", "responses.parse", "completions", "rerank", "score"
     ] = "auto",
     raw=False,
     meta=None,
     force=False,
+    request_flag: Any = None,
     *args,
     **kwargs,
 ) -> str | dict | tuple[str | dict, Any] | Completion | Response | EmbeddingResponse:
@@ -2062,6 +2257,7 @@ async def async_openai_complete(
     :param messages: Full list of messages including system, user, and assistant messages, if provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored.
     :param json_mode: Whether to expect a JSON response, output will be a STR.
     :param json_format: A Pydantic BaseModel class to parse the JSON response into, output will be a DICT.
+    :param response_format: Direct passthrough for response_format parameter (for API server use).
     :param meta: Optional metadata to attach to exceptions for debugging, if set, returns (response, meta).
 
     :return response: The completed text or parsed JSON response, or a tuple of (response, meta) if meta is provided.
@@ -2077,10 +2273,12 @@ async def async_openai_complete(
         messages,
         json_mode,
         json_format,
+        response_format,
         call_method,
         raw,
         meta,
         force,
+        request_flag,
         *args,
         **kwargs,
     )
@@ -2094,12 +2292,14 @@ def openai_complete(
     messages: list[dict] = [],
     json_mode: bool = False,
     json_format: Optional[BaseModel] = None,
+    response_format: Optional[dict] = None,
     call_method: Literal[
-        "auto", "chat.completions", "embeddings", "responses.parse", "completions"
+        "auto", "chat.completions", "embeddings", "responses.parse", "completions", "rerank", "score"
     ] = "auto",
     raw=False,
     meta=None,
     force=False,
+    request_flag: Any = None,
     *args,
     **kwargs,
 ) -> str | dict | tuple[str | dict, Any]:
@@ -2113,6 +2313,7 @@ def openai_complete(
     :param messages: Full list of messages including system, user, and assistant messages, if provided, 'prompt', 'system_prompt', and 'history_messages' will be ignored.
     :param json_mode: Whether to expect a JSON response, output will be a STR.
     :param json_format: A Pydantic BaseModel class to parse the JSON response into, output will be a DICT.
+    :param response_format: Direct passthrough for response_format parameter (for API server use).
     :param meta: Optional metadata to attach to exceptions for debugging, if set, returns (response, meta).
 
     :return response: The completed text or parsed JSON response, or a tuple of (response, meta) if meta is provided.
@@ -2127,9 +2328,11 @@ def openai_complete(
             messages,
             json_mode,
             json_format,
+            response_format=response_format,
             call_method=call_method,
             raw=raw,
             force=force,
+            request_flag=request_flag,
             *args,
             **kwargs,
         )
