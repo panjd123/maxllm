@@ -20,7 +20,7 @@ from openai.types.create_embedding_response import (
 from openai.types.create_embedding_response import Usage as EmbeddingUsage
 from openai.types.responses import ResponseUsage, Response
 import yaml
-import requests
+import httpx
 from copy import deepcopy
 
 import openai
@@ -703,17 +703,25 @@ class AutoLoopBigSemaphore:
     def use(self, n=1):
         return AutoLoopBigSemaphore._Ctx(self, n)
 
-class VLLMSleepModeManager:
+class SleepModeManager:
     vllm_api_base: str
-    def __init__(self, vllm_api_base: Optional[str] = None):
+    is_vllama: bool
+    model: str
+    
+    def __init__(self, vllm_api_base: Optional[str] = None, model: str = ""):
         self.vllm_api_base = vllm_api_base
+        self.model = model
+        if "33258" in vllm_api_base:
+            self.is_vllama = True
+        else:
+            self.is_vllama = False
         
     def is_sleep(self) -> bool:
         if not self.vllm_api_base:
             return False
         url = osp.join(self.vllm_api_base, "is_sleeping")
         try:
-            with requests.get(url) as resp:
+            with httpx.get(url) as resp:
                 if resp.status_code == 200:
                     data = resp.json()
                     return data.get("is_sleeping", False)
@@ -750,7 +758,7 @@ class VLLMSleepModeManager:
             return
         url = osp.join(self.vllm_api_base, "sleep?level=1")
         try:
-            with requests.post(url) as resp:
+            with httpx.post(url) as resp:
                 text = resp.text
                 logger.info(
                     f"VLLM model sleep response: {resp.status_code} - {text}"
@@ -777,7 +785,7 @@ class VLLMSleepModeManager:
             return
         url = osp.join(self.vllm_api_base, "wake_up")
         try:
-            with requests.post(url) as resp:
+            with httpx.post(url) as resp:
                 text = resp.text
                 logger.info(
                     f"VLLM model wake_up response: {resp.status_code} - {text}"
@@ -800,14 +808,35 @@ class VLLMSleepModeManager:
             logger.error(f"VLLM model wake_up error: {e}")
             
     def auto_wake_up(self):
-        is_sleep = self.is_sleep()
-        if is_sleep:
-            self.wake_up()
-
+        if not self.is_vllama:
+            is_sleep = self.is_sleep()
+            if is_sleep:
+                self.wake_up()
+        else:
+            response = httpx.post(
+                f"{self.vllm_api_base}/instances/{self.model}/start",
+                timeout=300.0
+            )
+            if response.status_code == 200:
+                logger.info(f"VLLama model {self.model} start/wake-up response: {response.text}")
+            else:
+                logger.error(f"VLLama model {self.model} start/wake-up failed: {response.status_code} - {response.text}")
+                
     async def aauto_wake_up(self):
-        is_sleep = await self.ais_sleep()
-        if is_sleep:
-            await self.awake_up()
+        if not self.is_vllama:
+            is_sleep = await self.ais_sleep()
+            if is_sleep:
+                await self.awake_up()
+        else:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(
+                    f"{self.vllm_api_base}/instances/{self.model}/start",
+                )
+                if response.status_code == 200:
+                    logger.info(f"VLLama model {self.model} start/wake-up response: {response.text}")
+                else:
+                    logger.error(f"VLLama model {self.model} start/wake-up failed: {response.status_code} - {response.text}")
+            
 
 class RateLimitCompleter:
     is_embedding_model: bool
@@ -819,7 +848,7 @@ class RateLimitCompleter:
     api_key: str
     vllm_api_base: str
     model: str
-    vllm_sleep_mode_manager: VLLMSleepModeManager
+    sleep_mode_manager: SleepModeManager
 
     def __init__(
         self,
@@ -879,11 +908,11 @@ class RateLimitCompleter:
 
         if self.is_local_model:
             vllm_api_base = api_base.replace("/v1", "")
-            self.vllm_sleep_mode_manager = VLLMSleepModeManager(vllm_api_base)
+            self.sleep_mode_manager = SleepModeManager(vllm_api_base, model)
             if not lazy_wake_up:
-                self.vllm_sleep_mode_manager.auto_wake_up()
+                self.sleep_mode_manager.auto_wake_up()
         else:
-            self.vllm_sleep_mode_manager = VLLMSleepModeManager(None)
+            self.sleep_mode_manager = SleepModeManager(None, model)
 
         self.enable_call_status = True
 
@@ -1669,7 +1698,7 @@ class RateLimitCompleter:
                         payload.update(kwargs)
 
                     headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-                    resp = requests.post(score_url, json=payload, headers=headers)
+                    resp = httpx.post(score_url, json=payload, headers=headers)
                     if resp.status_code != 200:
                         raise Exception(f"Score/Rerank API error: {resp.status_code} - {resp.text}")
                     response_data = resp.json()
@@ -2376,7 +2405,7 @@ def warmup_models(models: list[str]):
         for model in selector.models:
             if model not in _completers:
                 completer = get_completer(model, lazy_wake_up=True)
-                completer.vllm_sleep_mode_manager.auto_wake_up()
+                completer.sleep_mode_manager.auto_wake_up()
         model_unique_names.append(selector.model_unique_name)
     end_time = time.time()
     logger.info(f"Warmup {model} took {end_time - start_time:.2f} seconds.")
@@ -2393,7 +2422,7 @@ async def awarmup_models(models: list[str]):
         for model in selector.models:
             if model not in _completers:
                 completer = get_completer(model, lazy_wake_up=True)
-                tasks.append(completer.vllm_sleep_mode_manager.aauto_wake_up())
+                tasks.append(completer.sleep_mode_manager.aauto_wake_up())
     await asyncio.gather(*tasks)
     end_time = time.time()
     logger.info(f"Async warmup {model} took {end_time - start_time:.2f} seconds.")
